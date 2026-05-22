@@ -1,0 +1,112 @@
+# CompetifyAI 本地开发栈
+#
+# 启动：make infra-up
+# 停止：make infra-down
+# 状态：make infra-ps
+#
+# 注：原设计含 OpenViking，简化方案用 pgvector 替代（见 memory/project_competifyai.md）。
+# Phase 6 若要接 OpenViking，启用文件末尾的占位 service。
+
+services:
+  # ---- 图数据库（本体存储） ----
+  dgraph-zero:
+    image: dgraph/dgraph:v24.0.0
+    container_name: competify-dgraph-zero
+    command: dgraph zero --my=dgraph-zero:5080
+    ports:
+      - "5080:5080"
+      - "6080:6080"
+    volumes:
+      - dgraph-zero-data:/dgraph
+    restart: unless-stopped
+
+  dgraph-alpha:
+    image: dgraph/dgraph:v24.0.0
+    container_name: competify-dgraph-alpha
+    command: dgraph alpha --my=dgraph-alpha:7080 --zero=dgraph-zero:5080 --security whitelist=0.0.0.0/0
+    ports:
+      - "7080:7080"
+      - "8081:8080"
+      - "9080:9080"
+    volumes:
+      - dgraph-alpha-data:/dgraph
+    depends_on:
+      - dgraph-zero
+    restart: unless-stopped
+
+  dgraph-ratel:
+    image: dgraph/ratel:v21.12.0
+    container_name: competify-dgraph-ratel
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
+
+  # ---- 向量存储（pgvector，替代 VikingDB） ----
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: competify-postgres
+    environment:
+      POSTGRES_DB: competify
+      POSTGRES_USER: competify
+      POSTGRES_PASSWORD: competify_dev
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    restart: unless-stopped
+
+  # ---- 消息队列（本体动态演化事件） ----
+  nats:
+    image: nats:2.10-alpine
+    container_name: competify-nats
+    command: ["-js", "-m", "8222"]
+    ports:
+      - "4222:4222"  # client
+      - "8222:8222"  # http monitor
+    volumes:
+      - nats-data:/data
+    restart: unless-stopped
+
+  # ---- 链路追踪（Jaeger all-in-one） ----
+  jaeger:
+    image: jaegertracing/all-in-one:1.57
+    container_name: competify-jaeger
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports:
+      - "16686:16686"  # UI
+      - "4317:4317"    # OTLP gRPC
+      - "4318:4318"    # OTLP HTTP
+      - "14268:14268"  # Jaeger HTTP collector
+    restart: unless-stopped
+
+  # ---- 指标 ----
+  prometheus:
+    image: prom/prometheus:v2.52.0
+    container_name: competify-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    restart: unless-stopped
+
+  # ---- OpenViking（Phase 6 启用，目前占位） ----
+  # openviking:
+  #   image: bytedance/openviking:latest
+  #   container_name: competify-openviking
+  #   ports:
+  #     - "8888:8888"
+  #   environment:
+  #     OPENVIKING_STORAGE_BACKEND: filesystem
+  #   volumes:
+  #     - openviking-data:/data
+  #   restart: unless-stopped
+
+volumes:
+  dgraph-zero-data:
+  dgraph-alpha-data:
+  postgres-data:
+  nats-data:
+  prometheus-data:
+  # openviking-data:

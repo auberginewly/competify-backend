@@ -1,0 +1,104 @@
+# 本体 YAML — 单一真相源（Single Source of Truth）
+# 修改这里后必须运行 `make schema-gen` 同步 Go Struct 和 Dgraph Schema
+ontology_version: "1.0"
+domain: "ai_tools"
+
+object_types:
+  Competitor:
+    properties:
+      company_name:  { type: string, required: true, indexed: exact }
+      founded_date:  { type: datetime }
+      funding_stage: { type: enum, values: [seed, series_a, series_b, series_c, ipo, acquired] }
+      team_size:     { type: int }
+      threat_level:  { type: int, min: 1, max: 5 }
+      headquarters:  { type: string }
+      website:       { type: string, required: true }
+    links:
+      develops:      { target: Product, cardinality: one_to_many, reverse: developed_by }
+      competes_with: { target: Competitor, cardinality: many_to_many }
+
+  Product:
+    properties:
+      product_name: { type: string, required: true, indexed: term }
+      description:  { type: string }
+      category:     { type: enum, values: [llm_platform, code_assistant, image_generation, video_generation, voice_synthesis, agent_framework, rag_system] }
+      launch_date:  { type: datetime }
+      core_tech:    { type: string }
+      user_rating:  { type: float, min: 0, max: 5 }
+      review_count: { type: int }
+    links:
+      belongs_to:     { target: Competitor, cardinality: many_to_one, reverse: develops }
+      offers_feature: { target: Feature, cardinality: one_to_many, reverse: part_of }
+      has_pricing:    { target: PricingTier, cardinality: one_to_many, reverse: for_product }
+
+  Feature:
+    properties:
+      feature_name: { type: string, required: true, indexed: exact }
+      description:  { type: string }
+      availability: { type: bool, required: true }
+      maturity:     { type: int, min: 1, max: 5, required: true }
+      category:     { type: enum, values: [core, differentiator, experimental, deprecated] }
+      last_updated: { type: datetime, required: true }
+      evidence_url: { type: string }
+    links:
+      part_of: { target: Product, cardinality: many_to_one }
+
+  PricingTier:
+    properties:
+      tier_name:      { type: string, required: true }
+      price:          { type: float, required: true }
+      currency:       { type: enum, values: [USD, CNY, EUR], default: USD }
+      billing_model:  { type: enum, values: [subscription, usage_based, perpetual, freemium] }
+      target_segment: { type: string }
+      limitations:    { type: string }
+      last_updated:   { type: datetime, required: true }
+
+  UserSegment:
+    properties:
+      segment_name:       { type: string, required: true }
+      description:        { type: string }
+      core_pain_points:   { type: list, item_type: string }
+      typical_use_cases:  { type: list, item_type: string }
+      satisfaction_score: { type: float, min: 0, max: 10 }
+
+  TechComponent:
+    properties:
+      component_name: { type: string, required: true }
+      technology:     { type: string, required: true }
+      architecture:   { type: enum, values: [microservices, monolithic, serverless, edge, hybrid] }
+      open_source:    { type: bool }
+      github_stars:   { type: int }
+      last_commit:    { type: datetime }
+
+  MarketEvent:
+    properties:
+      event_date:  { type: datetime, required: true }
+      event_type:  { type: enum, values: [funding, product_launch, acquisition, partnership, lawsuit, layoff, price_change], required: true }
+      description: { type: string, required: true }
+      impact:      { type: enum, values: [high_positive, positive, neutral, negative, high_negative] }
+      source_url:  { type: string, required: true }
+      confidence:  { type: float, min: 0, max: 1, required: true }
+
+action_types:
+  DiscoverCompetitor:
+    params: { company_name: string, product_name: string, website: string }
+    validation: ["NOT EXISTS Competitor WHERE company_name = $company_name"]
+    edits: ["CREATE Competitor"]
+    triggers: ["auto_discovery_workflow"]
+
+  UpdateFeature:
+    params: { product_id: uuid, feature_name: string, availability: bool }
+    validation: ["EXISTS Product WHERE uid = $product_id"]
+    edits: ["UPDATE Feature"]
+    triggers: ["feature_matrix_recalc", "positioning_update"]
+
+functions:
+  CalculateThreatLevel:
+    inputs: [Competitor, Product, MarketEvent]
+    output: { type: float, min: 0, max: 1 }
+    weights:
+      market_share: 0.30
+      differentiation: 0.25
+      pricing: 0.20
+      funding: 0.15
+      satisfaction: 0.10

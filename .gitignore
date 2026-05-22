@@ -1,0 +1,31 @@
+# Go
+*.exe
+*.test
+*.out
+bin/
+vendor/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Env
+.env
+.env.local
+*.local
+
+# OS
+.DS_Store
+
+# Build artifacts
+/dist/
+/build/
+
+# Logs
+*.log
+logs/
+
+# Claude
+.claude/settings.local.json

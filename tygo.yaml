@@ -1,0 +1,9 @@
+packages:
+  - path: "github.com/competify-ai/competify-backend/internal/schema"
+    output_path: "../competify-frontend/src/types/api.ts"
+    type_mappings:
+      "time.Time": "string"
+      "uuid.UUID": "string"
+    frontmatter: |
+      // ⚠️ 此文件由 tygo 从后端 internal/schema/types.go 自动生成
+      // 禁止手动编辑！修改后端类型后请运行 `make sync-types`

@@ -1,0 +1,352 @@
+//go:build generator
+// +build generator
+
+// Generator reads schema.yaml and produces:
+//  1. The ontology section in types.go (between AUTOGEN:ONTOLOGY:START/END markers)
+//  2. dgraph/schema_gen.go (DQL schema constant for InitializeSchema)
+//
+// Run via: make schema-gen (or `go generate ./internal/schema/`).
+package main
+
+import (
+	"bytes"
+	"fmt"
+	"go/format"
+	"log"
+	"os"
+	"path/filepath"
+	"regexp"
+	"sort"
+	"strings"
+	"text/template"
+
+	"gopkg.in/yaml.v3"
+)
+
+// ============ YAML model ============
+
+type ontologyDoc struct {
+	OntologyVersion string                `yaml:"ontology_version"`
+	Domain          string                `yaml:"domain"`
+	ObjectTypes     map[string]objectType `yaml:"object_types"`
+}
+
+type objectType struct {
+	Properties map[string]propertyDef `yaml:"properties"`
+	Links      map[string]linkDef     `yaml:"links"`
+}
+
+type propertyDef struct {
+	Type     string   `yaml:"type"`
+	Required bool     `yaml:"required"`
+	Indexed  string   `yaml:"indexed"`
+	Values   []string `yaml:"values"`
+	ItemType string   `yaml:"item_type"`
+}
+
+type linkDef struct {
+	Target      string `yaml:"target"`
+	Cardinality string `yaml:"cardinality"`
+	Reverse     string `yaml:"reverse"`
+}
+
+// ============ Naming helpers ============
+
+var acronyms = map[string]string{"url": "URL", "id": "ID", "uid": "UID", "api": "API", "uri": "URI"}
+
+func toCamel(s string) string {
+	parts := strings.Split(s, "_")
+	var b strings.Builder
+	for _, p := range parts {
+		if up, ok := acronyms[p]; ok {
+			b.WriteString(up)
+		} else if p != "" {
+			b.WriteString(strings.ToUpper(p[:1]) + p[1:])
+		}
+	}
+	return b.String()
+}
+
+// ============ Type mapping ============
+
+func goType(p propertyDef) string {
+	switch p.Type {
+	case "string", "enum":
+		return "string"
+	case "datetime":
+		return "*time.Time"
+	case "int":
+		return "int"
+	case "bool":
+		return "bool"
+	case "float":
+		return "float64"
+	case "list":
+		switch p.ItemType {
+		case "string":
+			return "[]string"
+		case "int":
+			return "[]int"
+		default:
+			return "[]string"
+		}
+	case "uuid":
+		return "string"
+	default:
+		return "string"
+	}
+}
+
+func goLinkType(l linkDef) string {
+	switch l.Cardinality {
+	case "one_to_many", "many_to_many":
+		return "[]*" + l.Target
+	default:
+		return "*" + l.Target
+	}
+}
+
+func dgraphType(p propertyDef) string {
+	switch p.Type {
+	case "string", "enum", "uuid":
+		return "string"
+	case "datetime":
+		return "dateTime"
+	case "int":
+		return "int"
+	case "bool":
+		return "bool"
+	case "float":
+		return "float"
+	case "list":
+		switch p.ItemType {
+		case "int":
+			return "[int]"
+		default:
+			return "[string]"
+		}
+	}
+	return "string"
+}
+
+func dgraphIndex(p propertyDef) string {
+	if p.Indexed != "" {
+		return fmt.Sprintf(" @index(%s)", p.Indexed)
+	}
+	if p.Type == "datetime" {
+		return " @index(hour)"
+	}
+	if p.Type == "enum" {
+		return " @index(hash)"
+	}
+	return ""
+}
+
+func dgraphLinkType(l linkDef) string {
+	switch l.Cardinality {
+	case "one_to_many", "many_to_many":
+		return "[uid]"
+	default:
+		return "uid"
+	}
+}
+
+// ============ Type rendering ============
+
+type fieldTpl struct {
+	GoName  string
+	GoType  string
+	JSONTag string
+}
+
+type structTpl struct {
+	GoName  string
+	Comment string
+	Fields  []fieldTpl
+}
+
+const ontologyTemplate = `{{range .}}
+// {{.GoName}} {{.Comment}}
+type {{.GoName}} struct {
+{{- range .Fields}}
+	{{.GoName}} {{.GoType}} ` + "`json:\"{{.JSONTag}},omitempty\"`" + `
+{{- end}}
+}
+{{end}}`
+
+var commentByType = map[string]string{
+	"Competitor":    "竞品实体",
+	"Product":       "产品实体",
+	"Feature":       "功能实体",
+	"PricingTier":   "定价实体",
+	"UserSegment":   "用户群体实体",
+	"TechComponent": "技术栈实体",
+	"MarketEvent":   "市场事件实体",
+}
+
+func renderOntology(doc ontologyDoc) (string, error) {
+	names := make([]string, 0, len(doc.ObjectTypes))
+	for n := range doc.ObjectTypes {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+
+	structs := make([]structTpl, 0, len(names))
+	for _, name := range names {
+		ot := doc.ObjectTypes[name]
+		fields := []fieldTpl{{GoName: "UID", GoType: "string", JSONTag: "uid"}}
+
+		propNames := sortedKeys(ot.Properties)
+		for _, pn := range propNames {
+			p := ot.Properties[pn]
+			fields = append(fields, fieldTpl{GoName: toCamel(pn), GoType: goType(p), JSONTag: pn})
+		}
+		linkNames := sortedKeysLink(ot.Links)
+		for _, ln := range linkNames {
+			l := ot.Links[ln]
+			fields = append(fields, fieldTpl{GoName: toCamel(ln), GoType: goLinkType(l), JSONTag: ln})
+		}
+
+		comment := commentByType[name]
+		if comment == "" {
+			comment = "(no comment)"
+		}
+		structs = append(structs, structTpl{GoName: name, Comment: comment, Fields: fields})
+	}
+
+	tpl := template.Must(template.New("ontology").Parse(ontologyTemplate))
+	var buf bytes.Buffer
+	if err := tpl.Execute(&buf, structs); err != nil {
+		return "", err
+	}
+	return buf.String(), nil
+}
+
+func renderDgraph(doc ontologyDoc) string {
+	var b strings.Builder
+	b.WriteString("// Code generated by schema/generator.go from schema.yaml. DO NOT EDIT.\n\n")
+	b.WriteString("package dgraph\n\n")
+	b.WriteString("// SchemaDQL is the Dgraph schema generated from internal/schema/schema.yaml.\n")
+	b.WriteString("// Use InitializeSchema in client.go to inject this into Dgraph at startup.\n")
+	b.WriteString("const SchemaDQL = `\n")
+
+	names := sortedKeysObj(doc.ObjectTypes)
+	for _, name := range names {
+		ot := doc.ObjectTypes[name]
+		b.WriteString(fmt.Sprintf("# ----- %s -----\n", name))
+		for _, pn := range sortedKeys(ot.Properties) {
+			p := ot.Properties[pn]
+			b.WriteString(fmt.Sprintf("%s.%s: %s%s .\n", name, pn, dgraphType(p), dgraphIndex(p)))
+		}
+		for _, ln := range sortedKeysLink(ot.Links) {
+			l := ot.Links[ln]
+			b.WriteString(fmt.Sprintf("%s.%s: %s @reverse .\n", name, ln, dgraphLinkType(l)))
+		}
+		b.WriteString("\n")
+	}
+	b.WriteString("# ----- types -----\n")
+	for _, name := range names {
+		ot := doc.ObjectTypes[name]
+		b.WriteString(fmt.Sprintf("type %s {\n", name))
+		for _, pn := range sortedKeys(ot.Properties) {
+			b.WriteString(fmt.Sprintf("    %s.%s\n", name, pn))
+		}
+		for _, ln := range sortedKeysLink(ot.Links) {
+			b.WriteString(fmt.Sprintf("    %s.%s\n", name, ln))
+		}
+		b.WriteString("}\n\n")
+	}
+	b.WriteString("`\n")
+	return b.String()
+}
+
+func sortedKeys(m map[string]propertyDef) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func sortedKeysLink(m map[string]linkDef) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func sortedKeysObj(m map[string]objectType) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+// ============ File ops ============
+
+const (
+	markerStart = "// AUTOGEN:ONTOLOGY:START"
+	markerEnd   = "// AUTOGEN:ONTOLOGY:END"
+)
+
+func replaceBetweenMarkers(path, content string) error {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	re := regexp.MustCompile(`(?s)` + regexp.QuoteMeta(markerStart) + `.*?` + regexp.QuoteMeta(markerEnd))
+	replacement := markerStart + "\n" + content + markerEnd
+	out := re.ReplaceAllString(string(raw), replacement)
+	formatted, err := format.Source([]byte(out))
+	if err != nil {
+		// fall back to unformatted so user can see the issue
+		return os.WriteFile(path, []byte(out), 0644)
+	}
+	return os.WriteFile(path, formatted, 0644)
+}
+
+// ============ Entry ============
+
+func main() {
+	wd, err := os.Getwd()
+	if err != nil {
+		log.Fatal(err)
+	}
+	// resolve paths relative to this file's directory (works under `go run`)
+	schemaPath := filepath.Join(wd, "schema.yaml")
+	typesPath := filepath.Join(wd, "types.go")
+	dgraphGen := filepath.Join(wd, "..", "storage", "dgraph", "schema_gen.go")
+
+	raw, err := os.ReadFile(schemaPath)
+	if err != nil {
+		log.Fatalf("read schema.yaml: %v", err)
+	}
+	var doc ontologyDoc
+	if err := yaml.Unmarshal(raw, &doc); err != nil {
+		log.Fatalf("parse schema.yaml: %v", err)
+	}
+
+	body, err := renderOntology(doc)
+	if err != nil {
+		log.Fatalf("render ontology: %v", err)
+	}
+	if err := replaceBetweenMarkers(typesPath, body); err != nil {
+		log.Fatalf("write types.go: %v", err)
+	}
+	fmt.Printf("✅ updated %s (%d types)\n", typesPath, len(doc.ObjectTypes))
+
+	dq := renderDgraph(doc)
+	formatted, err := format.Source([]byte(dq))
+	if err != nil {
+		log.Fatalf("format dgraph schema: %v", err)
+	}
+	if err := os.WriteFile(dgraphGen, formatted, 0644); err != nil {
+		log.Fatalf("write dgraph/schema_gen.go: %v", err)
+	}
+	fmt.Printf("✅ wrote %s\n", dgraphGen)
+}

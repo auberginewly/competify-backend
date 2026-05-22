@@ -1,0 +1,17 @@
+# Prometheus 配置 — 抓取 competify-backend 的 /metrics 端点。
+# Phase 8 启用，目前 backend 还未暴露 /metrics，scrape 会失败但不影响其他服务。
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: 'competify-backend'
+    static_configs:
+      - targets: ['host.docker.internal:8080']
+        labels:
+          service: 'competify-backend'
+
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
