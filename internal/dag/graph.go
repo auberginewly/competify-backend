@@ -47,21 +47,21 @@ func BuildCompetifyGraph(
 	_ = graph.AddLambdaNode("cross_reviewer", wrapAgent[schema.AnalysisResult, schema.ReviewReport](crossReviewer))
 	_ = graph.AddEdge("analyzer", "cross_reviewer")
 
-	// 6. Branch after cross_reviewer
-	_ = graph.AddBranch("cross_reviewer", NewReviewBranch())
-
-	// 7. Writer
+	// 6. Writer, Retry, HumanIntervention — must be added before Branch.
 	_ = graph.AddLambdaNode("writer", wrapAgent[schema.ReviewReport, schema.DraftReport](writer))
-
-	// 8. Retry stub (pass-through)
-	_ = graph.AddLambdaNode("retry", compose.InvokableLambda(func(ctx context.Context, r *schema.ReviewReport) (*schema.ReviewReport, error) {
+	_ = graph.AddLambdaNode("retry", compose.InvokableLambda(func(ctx context.Context, r schema.ReviewReport) (schema.ReviewReport, error) {
 		return r, nil
 	}))
-
-	// 9. Human intervention stub (pass-through)
-	_ = graph.AddLambdaNode("human_intervention", compose.InvokableLambda(func(ctx context.Context, r *schema.ReviewReport) (*schema.ReviewReport, error) {
-		return AwaitHumanIntervention(ctx, r)
+	_ = graph.AddLambdaNode("human_intervention", compose.InvokableLambda(func(ctx context.Context, r schema.ReviewReport) (schema.ReviewReport, error) {
+		ptr, err := AwaitHumanIntervention(ctx, &r)
+		if err != nil {
+			return schema.ReviewReport{}, err
+		}
+		return *ptr, nil
 	}))
+
+	// 7. Branch after cross_reviewer
+	_ = graph.AddBranch("cross_reviewer", NewReviewBranch())
 
 	// Branch edges
 	_ = graph.AddEdge("cross_reviewer", "writer")
@@ -81,7 +81,8 @@ func BuildCompetifyGraph(
 // wrapAgent adapts the generic Agent interface to a typed Eino Lambda.
 func wrapAgent[I, O any](a agent.Agent) *compose.Lambda {
 	return compose.InvokableLambda(func(ctx context.Context, in I) (O, error) {
-		out, err := a.Execute(ctx, in)
+		// Pass pointer to Execute so agents can type-assert to *schema.XXX
+		out, err := a.Execute(ctx, &in)
 		if err != nil {
 			var zero O
 			return zero, err

@@ -10,7 +10,7 @@ import (
 
 // reviewCondition routes Cross-Reviewer output to the next node.
 // Three branches: APPROVE → writer / RETRY_AUTO → retry / REJECT_HUMAN → human_intervention.
-func reviewCondition(ctx context.Context, report *schema.ReviewReport) (string, error) {
+func reviewCondition(ctx context.Context, report schema.ReviewReport) (string, error) {
 	switch report.NextAction {
 	case "APPROVE":
 		return "writer", nil
