@@ -148,13 +148,14 @@ type FinalReviewInput struct {
 
 // FinalReviewOutput 终审员输出
 type FinalReviewOutput struct {
-	ReportID   string    `json:"report_id"`
-	Content    string    `json:"content"`
-	Status     string    `json:"status"` // APPROVED / REJECTED / NEEDS_REVISION
-	Signature  string    `json:"signature"`
-	Comment    string    `json:"comment"`
-	ApprovedAt time.Time `json:"approved_at"`
-	ApprovedBy string    `json:"approved_by"`
+	ReportID   string     `json:"report_id"`
+	Content    string     `json:"content"`
+	Status     string     `json:"status"` // APPROVED / REJECTED / NEEDS_REVISION
+	Signature  string     `json:"signature"`
+	Comment    string     `json:"comment"`
+	ApprovedAt time.Time  `json:"approved_at"`
+	ApprovedBy string     `json:"approved_by"`
+	Footnotes  []Footnote `json:"footnotes"`
 }
 
 // ============ Final Output ============

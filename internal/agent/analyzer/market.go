@@ -3,6 +3,7 @@ package analyzer
 import (
 	"context"
 	"fmt"
+	"log"
 	"time"
 
 	"github.com/cloudwego/eino-ext/components/model/openai"
@@ -33,8 +34,10 @@ func (m *MarketAnalyzer) Execute(ctx context.Context, input interface{}) (interf
 		return nil, fmt.Errorf("market analyzer: expected *schema.NormalizedDataset, got %T", input)
 	}
 
-	payload, reasoning, score, err := analyzeWithLLM(ctx, m.model, "market", ds.TaskID, ds.CleanedText)
+	competitor := competitorFromTaskID(ds.TaskID)
+	payload, reasoning, score, err := analyzeWithLLM(ctx, m.model, "market", competitor, ds.CleanedText)
 	if err != nil {
+		log.Printf("[Analyzer] market/%s LLM failed, using stub: %v", competitor, err)
 		payload = "Strong momentum in enterprise segment; 40 % YoY growth estimated."
 		reasoning = "Synthesized signals from funding, hiring and social trends."
 		score = 0.71

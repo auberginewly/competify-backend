@@ -3,6 +3,7 @@ package analyzer
 import (
 	"context"
 	"fmt"
+	"log"
 	"time"
 
 	"github.com/cloudwego/eino-ext/components/model/openai"
@@ -33,8 +34,10 @@ func (p *PricingAnalyzer) Execute(ctx context.Context, input interface{}) (inter
 		return nil, fmt.Errorf("pricing analyzer: expected *schema.NormalizedDataset, got %T", input)
 	}
 
-	payload, reasoning, score, err := analyzeWithLLM(ctx, p.model, "pricing", ds.TaskID, ds.CleanedText)
+	competitor := competitorFromTaskID(ds.TaskID)
+	payload, reasoning, score, err := analyzeWithLLM(ctx, p.model, "pricing", competitor, ds.CleanedText)
 	if err != nil {
+		log.Printf("[Analyzer] pricing/%s LLM failed, using stub: %v", competitor, err)
 		payload = "Pricing is competitive with a freemium model."
 		reasoning = "Compared tiers against 3 competitors."
 		score = 0.82

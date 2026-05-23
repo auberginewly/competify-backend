@@ -12,21 +12,21 @@ import (
 
 func TestBuildCompetifyGraph_Compile(t *testing.T) {
 	auditChain := provenance.NewAuditChain()
-	agents, err := BuildAllAgents(nil, auditChain, nil)
+	agents, err := BuildAllAgents(nil, auditChain, nil, nil)
 	require.NoError(t, err)
 	require.NotNil(t, agents)
 
-	runnable, err := BuildRunner(agents)
+	runnable, err := BuildRunner(agents, nil)
 	require.NoError(t, err)
 	assert.NotNil(t, runnable)
 }
 
 func TestExecuteDAG_MockMode(t *testing.T) {
 	auditChain := provenance.NewAuditChain()
-	agents, err := BuildAllAgents(nil, auditChain, nil)
+	agents, err := BuildAllAgents(nil, auditChain, nil, nil)
 	require.NoError(t, err)
 
-	runnable, err := BuildRunner(agents)
+	runnable, err := BuildRunner(agents, nil)
 	require.NoError(t, err)
 
 	output, err := ExecuteDAG(context.Background(), runnable, schema.UserQuery{

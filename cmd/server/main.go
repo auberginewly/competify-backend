@@ -8,6 +8,7 @@ import (
 	"flag"
 	"log"
 	"os"
+	"strings"
 	"time"
 
 	hertzapp "github.com/cloudwego/hertz/pkg/app"
@@ -23,10 +24,12 @@ import (
 	"github.com/competify-ai/competify-backend/internal/schema"
 	"github.com/competify-ai/competify-backend/internal/storage/dgraph"
 	"github.com/competify-ai/competify-backend/internal/storage/memory"
+	"github.com/competify-ai/competify-backend/internal/storage/tavily"
 	"github.com/competify-ai/competify-backend/internal/storage/viking"
 	"github.com/cloudwego/eino/compose"
 	natsserver "github.com/nats-io/nats-server/v2/server"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
@@ -70,12 +73,19 @@ func main() {
 		defer embeddedNS.Shutdown()
 	}
 
+	// 1.5 Create a single JetStream context shared by all components.
+	// Concurrent jetstream.New(nc) calls in v1.52.0 can trigger "connection closed".
+	js, err := jetstream.New(nc)
+	if err != nil {
+		log.Fatalf("jetstream: %v", err)
+	}
+
 	// 2. Initialize in-memory stores (shared between server and worker goroutine).
 	taskStore := memory.NewTaskStore()
 	reportStore := memory.NewReportStore()
 
 	// 3. Initialize messaging.
-	taskPublisher, err := messaging.NewTaskPublisher(nc)
+	taskPublisher, err := messaging.NewTaskPublisher(js)
 	if err != nil {
 		log.Fatalf("task publisher: %v", err)
 	}
@@ -87,26 +97,38 @@ func main() {
 	model := initChatModel(ctx)
 
 	// 3.6 Initialize competitor event Publisher (for Collector → NATS events).
-	competitorPub, notifyFn := initEventPublisher(ctx, nc)
+	competitorPub, notifyFn := initEventPublisher(ctx, js)
+
+	// 2.5 Connect to Dgraph (optional — handlers gracefully degrade when nil).
+	var dgClient *dgraph.Client
+	dgClient, err = dgraph.NewClient(dgraphAddr)
+	if err != nil {
+		log.Printf("[Dgraph] unavailable (%v), ontology queries will return empty", err)
+		dgClient = nil
+	} else {
+		log.Printf("[Dgraph] connected → %s", dgraphAddr)
+		defer dgClient.Close()
+	}
 
 	// 3.7 Initialize Watcher + Dgraph (for reactive ontology updates).
-	go startOntologyWatcher(ctx, nc, dgraphAddr)
+	go startOntologyWatcher(ctx, js, dgClient)
 
 	// 4. Initialize Agents + DAG runnable.
 	auditChain := provenance.NewAuditChain()
 	vikingClient := initVikingClient()
+	tavilyClient := initTavilyClient()
 	_ = competitorPub // held for lifetime; GC anchor
-	agents, err := dag.BuildAllAgents(model, auditChain, vikingClient, notifyFn)
+	agents, err := dag.BuildAllAgents(model, auditChain, vikingClient, tavilyClient, notifyFn)
 	if err != nil {
 		log.Fatalf("build agents: %v", err)
 	}
-	runnable, err := dag.BuildRunner(agents)
+	runnable, err := dag.BuildRunner(agents, nc)
 	if err != nil {
 		log.Fatalf("build runner: %v", err)
 	}
 
 	// 5. Start Worker goroutine (same process, shares memory stores).
-	go runWorker(ctx, nc, taskStore, reportStore, auditChain, agents, runnable)
+	go runWorker(ctx, nc, js, taskStore, reportStore, auditChain, agents, runnable)
 
 	// 6. Register Hertz routes with injected dependencies.
 	h := server.Default(server.WithHostPorts(":" + port))
@@ -115,6 +137,7 @@ func main() {
 		ReportStore:   reportStore,
 		TaskPublisher: taskPublisher,
 		NATSConn:      nc,
+		DgraphClient:  dgClient,
 	}
 	handler.Register(h, deps)
 
@@ -166,6 +189,7 @@ func connectNATS(natsURL string) (*nats.Conn, *natsserver.Server, error) {
 func runWorker(
 	ctx context.Context,
 	nc *nats.Conn,
+	js jetstream.JetStream,
 	taskStore *memory.TaskStore,
 	reportStore *memory.ReportStore,
 	auditChain *provenance.AuditChain,
@@ -174,7 +198,7 @@ func runWorker(
 ) {
 	log.Println("[Worker] starting inline worker goroutine...")
 
-	taskSub, err := messaging.NewTaskSubscriber(nc)
+	taskSub, err := messaging.NewTaskSubscriber(js)
 	if err != nil {
 		log.Fatalf("[Worker] task subscriber: %v", err)
 	}
@@ -183,8 +207,10 @@ func runWorker(
 		log.Printf("[Worker] received task %s", taskID)
 		taskStore.Update(taskID, "running")
 
-		// Drive frontend progress bar via NATS while the real DAG runs.
-		go handler.SimulateProgress(nc, taskID)
+		// Broadcast initial pending state for all DAG nodes.
+		for _, name := range agentNames {
+			_ = messaging.PublishDAGEvent(nc, taskID, messaging.NewDAGEvent(name, "pending", 0))
+		}
 
 		// Execute the real DAG.
 		output, err := dag.ExecuteDAG(ctx, runnable, query)
@@ -208,6 +234,7 @@ func runWorker(
 			ApprovedBy: output.ApprovedBy,
 			ApprovedAt: output.ApprovedAt,
 			MerkleRoot: merkleRoot,
+			Footnotes:  output.Footnotes,
 		}
 		reportStore.Save(report)
 		taskStore.Update(taskID, "done")
@@ -280,8 +307,13 @@ func runSmokeTest(addr string) {
 	log.Println("✅ smoke test passed")
 }
 
+// isPlaceholderKey returns true when the key has never been replaced with a real value.
+func isPlaceholderKey(k string) bool {
+	return strings.Contains(k, "xxxx") || k == "your-api-key-here" || k == "sk-placeholder"
+}
+
 // initChatModel creates the shared OpenAI chat model from environment variables.
-// Returns nil if MOCK_LLM is set or API key is missing — analyzers will fall back to stub data.
+// Returns nil if MOCK_LLM is set, API key is missing, or still a placeholder — analyzers fall back to stub data.
 func initChatModel(ctx context.Context) *openai.ChatModel {
 	if os.Getenv("MOCK_LLM") == "true" {
 		log.Println("[LLM] MOCK_LLM=true, running in stub mode")
@@ -290,6 +322,10 @@ func initChatModel(ctx context.Context) *openai.ChatModel {
 	apiKey := os.Getenv("OPENAI_API_KEY")
 	if apiKey == "" {
 		log.Println("[LLM] OPENAI_API_KEY not set, running in stub mode")
+		return nil
+	}
+	if isPlaceholderKey(apiKey) {
+		log.Println("[LLM] OPENAI_API_KEY is still a placeholder — edit .env and set a real key, running in stub mode")
 		return nil
 	}
 	baseURL := getenv("OPENAI_BASE_URL", "https://api.deepseek.com/v1")
@@ -310,8 +346,8 @@ func initChatModel(ctx context.Context) *openai.ChatModel {
 
 // initEventPublisher creates a messaging.Publisher backed EventNotifier.
 // Returns nil, nil when NATS is not available or stream setup fails — Collectors skip publishing.
-func initEventPublisher(ctx context.Context, nc *nats.Conn) (*messaging.Publisher, agent.EventNotifier) {
-	pub, err := messaging.NewPublisher(nc)
+func initEventPublisher(ctx context.Context, js jetstream.JetStream) (*messaging.Publisher, agent.EventNotifier) {
+	pub, err := messaging.NewPublisher(js)
 	if err != nil {
 		log.Printf("[Events] failed to create publisher: %v, Collectors will skip NATS events", err)
 		return nil, nil
@@ -337,25 +373,35 @@ func initEventPublisher(ctx context.Context, nc *nats.Conn) (*messaging.Publishe
 	return pub, notifyFn
 }
 
-// startOntologyWatcher connects to Dgraph and starts the NATS event loop.
-// Runs as a goroutine; safe to call even when Dgraph is unavailable.
-func startOntologyWatcher(ctx context.Context, nc *nats.Conn, dgraphAddr string) {
-	dgClient, err := dgraph.NewClient(dgraphAddr)
-	if err != nil {
-		log.Printf("[Watcher] Dgraph unavailable (%v), ontology auto-update disabled", err)
+// startOntologyWatcher starts the NATS event loop using an existing Dgraph client.
+// Runs as a goroutine; safe to call even when Dgraph is unavailable (dgClient may be nil).
+func startOntologyWatcher(ctx context.Context, js jetstream.JetStream, dgClient *dgraph.Client) {
+	if dgClient == nil {
+		log.Printf("[Watcher] Dgraph client nil, ontology auto-update disabled")
 		return
 	}
-	defer dgClient.Close()
 
-	watcher, err := messaging.NewWatcher(nc, dgClient)
+	watcher, err := messaging.NewWatcher(js, dgClient)
 	if err != nil {
 		log.Printf("[Watcher] failed to create: %v", err)
 		return
 	}
-	log.Printf("[Watcher] starting reactive ontology loop (dgraph=%s)", dgraphAddr)
+	log.Printf("[Watcher] starting reactive ontology loop")
 	if err := watcher.Start(ctx); err != nil && err != context.Canceled {
 		log.Printf("[Watcher] exited with error: %v", err)
 	}
+}
+
+// initTavilyClient creates a Tavily Search client from env vars.
+// Returns nil when TAVILY_API_KEY is not set — Collectors fall back to direct HTTP.
+func initTavilyClient() *tavily.Client {
+	key := os.Getenv("TAVILY_API_KEY")
+	if key == "" {
+		log.Println("[Tavily] TAVILY_API_KEY not set, Collectors will use direct HTTP fallback")
+		return nil
+	}
+	log.Println("[Tavily] search client initialized")
+	return tavily.NewClient(key)
 }
 
 // initVikingClient creates an OpenViking client from env vars.
@@ -376,4 +422,21 @@ func getenv(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+var agentNames = []string{
+	"orchestrator",
+	"collector_web",
+	"collector_api",
+	"collector_fin",
+	"collector_rev",
+	"collector_soc",
+	"cleaner",
+	"analyzer_feat",
+	"analyzer_price",
+	"analyzer_tech",
+	"analyzer_mkt",
+	"cross_reviewer",
+	"writer",
+	"final_reviewer",
 }

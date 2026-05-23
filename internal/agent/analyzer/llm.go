@@ -5,12 +5,23 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"strings"
 
 	"github.com/cloudwego/eino-ext/components/model/openai"
 	einoSchema "github.com/cloudwego/eino/schema"
 )
+
+// competitorFromTaskID extracts the competitor name from a task ID.
+// Task IDs have the form "task_<CompetitorName>_<unix_timestamp>".
+func competitorFromTaskID(taskID string) string {
+	s := strings.TrimPrefix(taskID, "task_")
+	if idx := strings.LastIndex(s, "_"); idx > 0 {
+		return s[:idx]
+	}
+	return s
+}
 
 // analyzeWithLLM calls the shared ChatModel with a dimension-specific prompt.
 // It returns structured findings, reasoning, and a confidence score.
@@ -27,12 +38,12 @@ func analyzeWithLLM(
 	}
 
 	systemPrompt := fmt.Sprintf(
-		`You are a competitive-intelligence %s analyst.
-Analyze the following data about "%s" and output a JSON object with exactly these fields:
-- "findings": concise summary (max 200 characters)
-- "reasoning": short chain-of-thought (max 300 characters)
-- "score": confidence score from 0.0 to 1.0
-Output JSON only, no markdown fences.`,
+		`你是一名竞品情报%s分析师。
+分析以下关于"%s"的数据，输出包含以下字段的JSON对象：
+- "findings": 简洁分析结论（最多200字，使用中文）
+- "reasoning": 简短推理过程（最多150字，使用中文）
+- "score": 置信度分数，0.0到1.0之间
+只输出JSON，不要markdown代码块。`,
 		dimension, competitor,
 	)
 
@@ -41,6 +52,7 @@ Output JSON only, no markdown fences.`,
 		{Role: einoSchema.User, Content: cleanedText},
 	})
 	if err != nil {
+		log.Printf("[LLM] analyzeWithLLM failed for %s/%s: %v", dimension, competitor, err)
 		return "", "", 0, fmt.Errorf("llm generate: %w", err)
 	}
 

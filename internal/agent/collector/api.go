@@ -3,16 +3,19 @@ package collector
 import (
 	"context"
 	"fmt"
+	"log"
 	"time"
 
 	"github.com/competify-ai/competify-backend/internal/agent"
 	"github.com/competify-ai/competify-backend/internal/provenance"
 	"github.com/competify-ai/competify-backend/internal/schema"
+	"github.com/competify-ai/competify-backend/internal/storage/tavily"
 )
 
-// APICollector queries GitHub / Crunchbase APIs.
+// APICollector queries GitHub and tech API data for the competitor.
 type APICollector struct {
 	agent.BaseAgent
+	TavilyClient *tavily.Client
 }
 
 func NewAPICollector(auditChain ...*provenance.AuditChain) *APICollector {
@@ -31,34 +34,48 @@ func (a *APICollector) Execute(ctx context.Context, input interface{}) (interfac
 		return nil, fmt.Errorf("api collector: expected *schema.TaskDAGPlan, got %T", input)
 	}
 
-	searchURL := fmt.Sprintf("https://api.github.com/search/repositories?q=%s&sort=stars&order=desc", plan.CompetitorName)
-	body, statusCode, err := fetchText(ctx, searchURL)
 	var rawContent string
 	var confidence float64
-	if err != nil || statusCode != 200 {
-		rawContent = fmt.Sprintf("GitHub API failed: status=%d err=%v", statusCode, err)
-		statusCode = 0
-		confidence = 0.30
+	sourceURL := fmt.Sprintf("https://github.com/search?q=%s", plan.CompetitorName)
+
+	if a.TavilyClient != nil {
+		query := fmt.Sprintf("%s tech stack GitHub repositories programming language architecture open source", plan.CompetitorName)
+		result, err := a.TavilyClient.Search(ctx, query)
+		if err != nil {
+			log.Printf("[APICollector] Tavily search failed for %s: %v", plan.CompetitorName, err)
+			rawContent = fmt.Sprintf("Search unavailable. Use training knowledge about %s tech stack and GitHub presence.", plan.CompetitorName)
+			confidence = 0.40
+		} else {
+			rawContent = result
+			confidence = 0.85
+			a.EmitEvent(ctx, plan.CompetitorName, "PRODUCT_LAUNCH",
+				fmt.Sprintf("tavily api search: %d chars", len(result)), sourceURL)
+		}
 	} else {
-		rawContent = body
-		confidence = 0.85
-		// Signal a product_launch event: GitHub release data indicates new features.
-		a.EmitEvent(ctx, plan.CompetitorName, "PRODUCT_LAUNCH",
-			fmt.Sprintf("github search: %d chars", len(body)), searchURL)
+		searchURL := fmt.Sprintf("https://api.github.com/search/repositories?q=%s&sort=stars&order=desc", plan.CompetitorName)
+		body, statusCode, err := fetchText(ctx, searchURL)
+		if err != nil || statusCode != 200 {
+			rawContent = fmt.Sprintf("GitHub API unavailable (status=%d). Use training knowledge about %s tech stack and repositories.", statusCode, plan.CompetitorName)
+			confidence = 0.40
+		} else {
+			rawContent = body
+			confidence = 0.85
+			a.EmitEvent(ctx, plan.CompetitorName, "PRODUCT_LAUNCH",
+				fmt.Sprintf("github search: %d chars", len(body)), searchURL)
+		}
 	}
 
 	pack := &schema.RawDataPack{
 		TaskID:      plan.TaskID,
 		SourceType:  "api",
-		SourceURL:   searchURL,
+		SourceURL:   sourceURL,
 		RawContent:  rawContent,
-		StatusCode:  statusCode,
 		CapturedAt:  time.Now().UTC(),
 		CollectorID: a.GenerateID(plan.TaskID),
 	}
 	a.RecordAudit(plan.TaskID, a.GenerateID(plan.TaskID),
 		plan.CompetitorName, pack.SourceURL,
-		"APICollector queried GitHub API", confidence)
+		"APICollector queried tech data", confidence)
 	return pack, nil
 }
 

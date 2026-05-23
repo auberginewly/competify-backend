@@ -5,8 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"sync/atomic"
 
-	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/competify-ai/competify-backend/internal/storage/dgraph"
 )
@@ -21,16 +21,13 @@ type OntologyUpdater interface {
 
 // Watcher subscribes to competitor events and updates the ontology in Dgraph.
 type Watcher struct {
-	js     jetstream.JetStream
-	dgraph OntologyUpdater
+	js            jetstream.JetStream
+	dgraph        OntologyUpdater
+	dgraphErrOnce atomic.Int32 // 1 after first Dgraph error is logged; suppresses repeats
 }
 
-// NewWatcher creates a Watcher. Call Start to begin consuming.
-func NewWatcher(nc *nats.Conn, dg OntologyUpdater) (*Watcher, error) {
-	js, err := jetstream.New(nc)
-	if err != nil {
-		return nil, fmt.Errorf("messaging.NewWatcher: %w", err)
-	}
+// NewWatcher creates a Watcher from an existing JetStream context. Call Start to begin consuming.
+func NewWatcher(js jetstream.JetStream, dg OntologyUpdater) (*Watcher, error) {
 	return &Watcher{js: js, dgraph: dg}, nil
 }
 
@@ -44,7 +41,8 @@ func (w *Watcher) Start(ctx context.Context) error {
 		MaxMsgs:   10000,
 	})
 	if err != nil {
-		return fmt.Errorf("messaging.Watcher.Start: create stream: %w", err)
+		// Stream is already ensured by main(); proceed to create consumer.
+		log.Printf("[Watcher] CreateOrUpdateStream warning (stream may exist): %v", err)
 	}
 
 	// Create a durable consumer.
@@ -86,16 +84,31 @@ func (w *Watcher) handleMsg(ctx context.Context, msg jetstream.Msg) error {
 }
 
 func (w *Watcher) handleEvent(ctx context.Context, ev *CompetitorEvent) error {
+	var err error
 	switch ev.EventType {
 	case EventNewFeature:
-		return w.dgraph.AddFeature(ctx, ev.CompetitorName, ev.Payload)
+		err = w.dgraph.AddFeature(ctx, ev.CompetitorName, ev.Payload)
 	case EventPriceChange:
-		return w.dgraph.UpdatePricing(ctx, ev.CompetitorName, ev.Payload)
+		err = w.dgraph.UpdatePricing(ctx, ev.CompetitorName, ev.Payload)
 	case EventFunding:
-		return w.dgraph.RecordFunding(ctx, ev.CompetitorName, ev.Payload)
+		err = w.dgraph.RecordFunding(ctx, ev.CompetitorName, ev.Payload)
+	case EventProductLaunch:
+		// Treat product launch as a feature update — adds to the ontology graph.
+		err = w.dgraph.AddFeature(ctx, ev.CompetitorName, ev.Payload)
 	default:
-		return fmt.Errorf("unknown event type: %s", ev.EventType)
+		// Unknown events are logged but not fatal — forward compatibility.
+		log.Printf("[Watcher] skipping unhandled event type: %s", ev.EventType)
+		return nil
 	}
+	if err != nil {
+		// Log dgraph write failures only once — when Dgraph is down every event
+		// would spam the log. Run `make infra-up` to enable persistent ontology.
+		if w.dgraphErrOnce.CompareAndSwap(0, 1) {
+			log.Printf("[Watcher] dgraph write failed (suppressing future errors — run `make infra-up` to enable): %v", err)
+		}
+		return nil // non-fatal: ontology update is best-effort
+	}
+	return nil
 }
 
 // PublishInternalRecalculation publishes a lightweight recalculation trigger.

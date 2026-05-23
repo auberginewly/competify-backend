@@ -211,3 +211,122 @@ func (c *Client) RecordFunding(ctx context.Context, competitorName, payload stri
 	}
 	return nil
 }
+
+// QueryAllCompetitors returns every Competitor node in Dgraph.
+func (c *Client) QueryAllCompetitors(ctx context.Context) ([]schema.Competitor, error) {
+	q := `{
+		q(func: type(Competitor)) {
+			uid
+			company_name:     Competitor.company_name
+			website:          Competitor.website
+			funding_stage:    Competitor.funding_stage
+			team_size:        Competitor.team_size
+			threat_level:     Competitor.threat_level
+			headquarters:     Competitor.headquarters
+			founded_date:     Competitor.founded_date
+		}
+	}`
+
+	resp, err := c.dg.NewReadOnlyTxn().Query(ctx, q)
+	if err != nil {
+		return nil, fmt.Errorf("dgraph.QueryAllCompetitors: %w", err)
+	}
+
+	var result struct {
+		Q []struct {
+			UID          string  `json:"uid"`
+			CompanyName  string  `json:"company_name"`
+			Website      string  `json:"website"`
+			FundingStage string  `json:"funding_stage"`
+			TeamSize     int     `json:"team_size"`
+			ThreatLevel  int     `json:"threat_level"`
+			Headquarters string  `json:"headquarters"`
+			FoundedDate  *string `json:"founded_date"`
+		} `json:"q"`
+	}
+	if err := json.Unmarshal(resp.Json, &result); err != nil {
+		return nil, fmt.Errorf("dgraph.QueryAllCompetitors: unmarshal: %w", err)
+	}
+
+	comps := make([]schema.Competitor, 0, len(result.Q))
+	for _, r := range result.Q {
+		comps = append(comps, schema.Competitor{
+			UID:          r.UID,
+			CompanyName:  r.CompanyName,
+			Website:      r.Website,
+			FundingStage: r.FundingStage,
+			TeamSize:     r.TeamSize,
+			ThreatLevel:  r.ThreatLevel,
+			Headquarters: r.Headquarters,
+		})
+	}
+	return comps, nil
+}
+
+// GraphNode is a Cytoscape-style node returned by QueryGraph.
+type GraphNode struct {
+	ID    string `json:"id"`
+	Label string `json:"label"`
+	Type  string `json:"type"`
+}
+
+// GraphEdge is a Cytoscape-style edge returned by QueryGraph.
+type GraphEdge struct {
+	Source string `json:"source"`
+	Target string `json:"target"`
+	Label  string `json:"label,omitempty"`
+}
+
+// QueryGraph returns all Competitor nodes and their competes_with relationships.
+// Returns empty slices when Dgraph has no data.
+func (c *Client) QueryGraph(ctx context.Context) ([]GraphNode, []GraphEdge, error) {
+	q := `{
+		competitors(func: type(Competitor)) {
+			uid
+			company_name: Competitor.company_name
+			competes_with { uid }
+		}
+	}`
+
+	resp, err := c.dg.NewReadOnlyTxn().Query(ctx, q)
+	if err != nil {
+		return nil, nil, fmt.Errorf("dgraph.QueryGraph: %w", err)
+	}
+
+	var result struct {
+		Competitors []struct {
+			UID          string `json:"uid"`
+			CompanyName  string `json:"company_name"`
+			CompetesWith []struct {
+				UID string `json:"uid"`
+			} `json:"competes_with"`
+		} `json:"competitors"`
+	}
+	if err := json.Unmarshal(resp.Json, &result); err != nil {
+		return nil, nil, fmt.Errorf("dgraph.QueryGraph: unmarshal: %w", err)
+	}
+
+	nodeMap := make(map[string]GraphNode, len(result.Competitors))
+	var edges []GraphEdge
+
+	for _, c := range result.Competitors {
+		nodeMap[c.UID] = GraphNode{
+			ID:    c.UID,
+			Label: c.CompanyName,
+			Type:  "competitor",
+		}
+		for _, rel := range c.CompetesWith {
+			edges = append(edges, GraphEdge{
+				Source: c.UID,
+				Target: rel.UID,
+				Label:  "competes_with",
+			})
+		}
+	}
+
+	nodes := make([]GraphNode, 0, len(nodeMap))
+	for _, n := range nodeMap {
+		nodes = append(nodes, n)
+	}
+	return nodes, edges, nil
+}

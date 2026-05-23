@@ -9,12 +9,12 @@ import (
 
 	"github.com/cloudwego/eino-ext/components/model/openai"
 	"github.com/competify-ai/competify-backend/internal/dag"
-	"github.com/competify-ai/competify-backend/internal/handler"
 	"github.com/competify-ai/competify-backend/internal/messaging"
 	"github.com/competify-ai/competify-backend/internal/provenance"
 	"github.com/competify-ai/competify-backend/internal/schema"
 	"github.com/competify-ai/competify-backend/internal/storage/viking"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 func main() {
@@ -33,16 +33,21 @@ func main() {
 	// Initialize Agents + DAG runnable.
 	auditChain := provenance.NewAuditChain()
 	vikingClient := initVikingClient()
-	agents, err := dag.BuildAllAgents(model, auditChain, vikingClient)
+	agents, err := dag.BuildAllAgents(model, auditChain, vikingClient, nil)
 	if err != nil {
 		log.Fatalf("build agents: %v", err)
 	}
-	runnable, err := dag.BuildRunner(agents)
+	runnable, err := dag.BuildRunner(agents, nil)
 	if err != nil {
 		log.Fatalf("build runner: %v", err)
 	}
 
-	taskSub, err := messaging.NewTaskSubscriber(nc)
+	js, err := jetstream.New(nc)
+	if err != nil {
+		log.Fatalf("jetstream: %v", err)
+	}
+
+	taskSub, err := messaging.NewTaskSubscriber(js)
 	if err != nil {
 		log.Fatalf("task subscriber: %v", err)
 	}
@@ -50,9 +55,6 @@ func main() {
 	log.Println("[Worker] waiting for tasks...")
 	if err := taskSub.SubscribeTask(ctx, func(taskID string, query schema.UserQuery) {
 		log.Printf("[Worker] received task %s", taskID)
-
-		// Drive frontend progress bar via NATS while the real DAG runs.
-		go handler.SimulateProgress(nc, taskID)
 
 		// Execute the real DAG.
 		output, err := dag.ExecuteDAG(ctx, runnable, query)

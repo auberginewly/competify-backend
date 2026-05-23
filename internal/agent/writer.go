@@ -4,11 +4,32 @@ package agent
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/competify-ai/competify-backend/internal/provenance"
 	"github.com/competify-ai/competify-backend/internal/schema"
 )
+
+// competitorFromTaskID extracts the competitor name from a task ID.
+// Task IDs have the form "task_<CompetitorName>_<unix_timestamp>".
+func competitorFromTaskID(taskID string) string {
+	s := strings.TrimPrefix(taskID, "task_")
+	if idx := strings.LastIndex(s, "_"); idx > 0 {
+		return s[:idx]
+	}
+	return s
+}
+
+// extractDimFromURI returns the dimension segment from a VikingURI.
+// e.g. "viking://competify/tasks/.../analyzers/feature" → "feature"
+func extractDimFromURI(uri string) string {
+	parts := strings.Split(uri, "/")
+	if len(parts) > 0 {
+		return parts[len(parts)-1]
+	}
+	return ""
+}
 
 // Writer composes the final Markdown report and anchors it to the audit Merkle Tree.
 type Writer struct {
@@ -66,9 +87,10 @@ func (w *Writer) Execute(ctx context.Context, input interface{}) (interface{}, e
 
 	avgConfidence := calculateAverageConfidence(footnotes)
 
+	competitor := competitorFromTaskID(report.TaskID)
 	draft := &schema.DraftReport{
 		TaskID:          report.TaskID,
-		Title:           fmt.Sprintf("Competitor Analysis: %s", report.TaskID),
+		Title:           fmt.Sprintf("%s 竞品分析报告", competitor),
 		MarkdownContent: buildMarkdown(report.TaskID, footnotes),
 		Footnotes:       footnotes,
 		MerkleRootHash:  merkleRoot,
@@ -86,15 +108,39 @@ func (w *Writer) Execute(ctx context.Context, input interface{}) (interface{}, e
 
 func (w *Writer) HealthCheck(ctx context.Context) error { return nil }
 
-// buildMarkdown assembles a minimal report body from footnotes.
+// buildMarkdown assembles a structured Chinese report body grouped by analysis dimension.
 func buildMarkdown(taskID string, footnotes []schema.Footnote) string {
-	md := fmt.Sprintf("# Competitor Analysis Report\n\n**Task ID:** %s\n\n", taskID)
+	competitor := competitorFromTaskID(taskID)
+
+	// Group footnotes by dimension extracted from VikingURI.
+	sectionMap := map[string]schema.Footnote{}
 	for _, fn := range footnotes {
-		md += fmt.Sprintf("- %s (confidence: %.2f) [^%s]\n", fn.Conclusion, fn.Confidence, fn.ID)
+		dim := extractDimFromURI(fn.VikingURI)
+		sectionMap[dim] = fn
 	}
-	md += "\n## Sources\n\n"
+
+	md := fmt.Sprintf("# %s 竞品分析报告\n\n", competitor)
+	md += "> 由 CompetifyAI 多 Agent 协作系统生成 · Merkle Tree 溯源可验证\n\n"
+	md += "---\n\n"
+
+	sections := []struct{ dim, title string }{
+		{"feature", "## 📦 功能矩阵分析"},
+		{"pricing", "## 💰 定价策略"},
+		{"tech", "## 🔧 技术栈推断"},
+		{"market", "## 📊 市场定位"},
+	}
+	for _, s := range sections {
+		md += s.title + "\n\n"
+		if fn, ok := sectionMap[s.dim]; ok {
+			md += fn.Conclusion + "\n\n"
+		} else {
+			md += "_数据不足，跳过此维度。_\n\n"
+		}
+	}
+
+	md += "---\n\n## 数据溯源\n\n"
 	for _, fn := range footnotes {
-		md += fmt.Sprintf("[^%s]: %s — %s\n", fn.ID, fn.VikingURI, fn.ProvenanceID)
+		md += fmt.Sprintf("- **置信度 %.0f%%**：%s\n", fn.Confidence*100, fn.Conclusion)
 	}
 	return md
 }

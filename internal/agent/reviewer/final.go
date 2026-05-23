@@ -47,6 +47,7 @@ func (f *FinalReviewer) Execute(ctx context.Context, input interface{}) (interfa
 		Comment:    "Approved by FinalReviewer with HMAC-SHA256 signature.",
 		ApprovedAt: time.Now().UTC(),
 		ApprovedBy: f.GenerateID(draft.TaskID),
+		Footnotes:  draft.Footnotes,
 	}
 
 	f.RecordAudit(draft.TaskID, f.GenerateID(draft.TaskID),

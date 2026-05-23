@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"strings"
 	"time"
 
 	"github.com/cloudwego/hertz/pkg/app"
@@ -13,25 +14,46 @@ func GetReportHandler(deps *Deps) func(context.Context, *app.RequestContext) {
 	return func(ctx context.Context, c *app.RequestContext) {
 		id := c.Param("id")
 
-		// Try to read a real report from the memory store first.
+		// Return the real report when available.
 		if r, ok := deps.ReportStore.Get(id); ok {
 			c.JSON(200, r)
 			return
 		}
 
-		// Fallback to mock data for backward compatibility.
-		approvedAt, _ := time.Parse(time.RFC3339, "2026-05-22T13:00:00Z")
-		c.JSON(200, schema.FinalReport{
-			TaskID:     id,
-			ReportID:   id,
-			Content:    mockReportMarkdown,
-			Status:     "published",
-			Signature:  "0x7a3f9e2b1c8d4e5f6a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f",
-			ApprovedBy: "final_reviewer",
-			ApprovedAt: approvedAt,
-			MerkleRoot: "0x7a3f9e2b1c8d4e5f6a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f",
+		// For the "demo" path (nav bar default), return a styled placeholder.
+		// For real task IDs, return 202 so the frontend knows to keep polling.
+		if id == "demo" {
+			approvedAt, _ := time.Parse(time.RFC3339, "2026-05-22T13:00:00Z")
+			c.JSON(200, schema.FinalReport{
+				TaskID:     id,
+				ReportID:   id,
+				Content:    mockReportMarkdown,
+				Status:     "published",
+				Signature:  "0x7a3f9e2b1c8d4e5f6a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f",
+				ApprovedBy: "final_reviewer",
+				ApprovedAt: approvedAt,
+				MerkleRoot: "0x7a3f9e2b1c8d4e5f6a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f",
+			})
+			return
+		}
+
+		// Real task report not ready yet — tell the frontend to retry.
+		competitor := competitorFromTaskID(id)
+		c.JSON(202, map[string]string{
+			"status":     "processing",
+			"competitor": competitor,
+			"message":    "报告生成中，请稍候…",
 		})
 	}
+}
+
+// competitorFromTaskID parses the competitor name from taskId format "task_<Name>_<timestamp>".
+func competitorFromTaskID(taskID string) string {
+	s := strings.TrimPrefix(taskID, "task_")
+	if idx := strings.LastIndex(s, "_"); idx > 0 {
+		return s[:idx]
+	}
+	return s
 }
 
 // GetProvenance handles GET /api/v1/reports/:id/provenance.

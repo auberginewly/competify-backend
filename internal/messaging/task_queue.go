@@ -4,8 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 
-	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/competify-ai/competify-backend/internal/schema"
 )
@@ -21,12 +21,8 @@ type TaskPublisher struct {
 	js jetstream.JetStream
 }
 
-// NewTaskPublisher creates a TaskPublisher.
-func NewTaskPublisher(nc *nats.Conn) (*TaskPublisher, error) {
-	js, err := jetstream.New(nc)
-	if err != nil {
-		return nil, fmt.Errorf("messaging.NewTaskPublisher: %w", err)
-	}
+// NewTaskPublisher creates a TaskPublisher from an existing JetStream context.
+func NewTaskPublisher(js jetstream.JetStream) (*TaskPublisher, error) {
 	return &TaskPublisher{js: js}, nil
 }
 
@@ -70,12 +66,8 @@ type TaskSubscriber struct {
 	js jetstream.JetStream
 }
 
-// NewTaskSubscriber creates a TaskSubscriber.
-func NewTaskSubscriber(nc *nats.Conn) (*TaskSubscriber, error) {
-	js, err := jetstream.New(nc)
-	if err != nil {
-		return nil, fmt.Errorf("messaging.NewTaskSubscriber: %w", err)
-	}
+// NewTaskSubscriber creates a TaskSubscriber from an existing JetStream context.
+func NewTaskSubscriber(js jetstream.JetStream) (*TaskSubscriber, error) {
 	return &TaskSubscriber{js: js}, nil
 }
 
@@ -88,7 +80,8 @@ func (s *TaskSubscriber) SubscribeTask(ctx context.Context, handler func(taskID 
 		MaxMsgs:   10000,
 	})
 	if err != nil {
-		return fmt.Errorf("messaging.SubscribeTask: create stream: %w", err)
+		// Stream is already ensured by main(); proceed to create consumer.
+		log.Printf("[TaskSubscriber] CreateOrUpdateStream warning (stream may exist): %v", err)
 	}
 
 	cons, err := s.js.CreateOrUpdateConsumer(ctx, taskStreamName, jetstream.ConsumerConfig{

@@ -12,7 +12,9 @@ import (
 	"github.com/competify-ai/competify-backend/internal/agent/reviewer"
 	"github.com/competify-ai/competify-backend/internal/provenance"
 	"github.com/competify-ai/competify-backend/internal/schema"
+	"github.com/competify-ai/competify-backend/internal/storage/tavily"
 	"github.com/competify-ai/competify-backend/internal/storage/viking"
+	"github.com/nats-io/nats.go"
 )
 
 // AgentSet holds all initialized agents for pipeline construction.
@@ -35,8 +37,8 @@ type AgentSet struct {
 
 // BuildAllAgents initializes every agent role with a shared audit chain.
 // model may be nil (analyzers fall back to stub); vc may be nil (DevilsAdvocate falls back to heuristics).
-// notifyFn may be nil — Collectors call it on data detection for reactive ontology updates.
-func BuildAllAgents(model *openai.ChatModel, auditChain *provenance.AuditChain, vc *viking.Client, notifyFn ...agent.EventNotifier) (*AgentSet, error) {
+// tc may be nil (Collectors fall back to direct HTTP); notifyFn may be nil.
+func BuildAllAgents(model *openai.ChatModel, auditChain *provenance.AuditChain, vc *viking.Client, tc *tavily.Client, notifyFn ...agent.EventNotifier) (*AgentSet, error) {
 	devil := reviewer.NewDevilsAdvocate(vc, auditChain)
 
 	var notify agent.EventNotifier
@@ -46,16 +48,28 @@ func BuildAllAgents(model *openai.ChatModel, auditChain *provenance.AuditChain, 
 
 	webCol := collector.NewWebCollector(auditChain)
 	webCol.Notify = notify
+	webCol.TavilyClient = tc
+
 	apiCol := collector.NewAPICollector(auditChain)
 	apiCol.Notify = notify
+	apiCol.TavilyClient = tc
+
+	finCol := collector.NewFinancialCollector(auditChain)
+	finCol.TavilyClient = tc
+
+	revCol := collector.NewReviewCollector(auditChain)
+	revCol.TavilyClient = tc
+
+	socCol := collector.NewSocialCollector(auditChain)
+	socCol.TavilyClient = tc
 
 	set := &AgentSet{
 		Orchestrator:  agent.NewOrchestrator(auditChain),
 		CollectorWeb:  webCol,
 		CollectorAPI:  apiCol,
-		CollectorFin:  collector.NewFinancialCollector(auditChain),
-		CollectorRev:  collector.NewReviewCollector(auditChain),
-		CollectorSoc:  collector.NewSocialCollector(auditChain),
+		CollectorFin:  finCol,
+		CollectorRev:  revCol,
+		CollectorSoc:  socCol,
 		Cleaner:       agent.NewCleaner(auditChain),
 		AnalyzerFeat:  analyzer.NewFeatureAnalyzer(model, auditChain),
 		AnalyzerPrice: analyzer.NewPricingAnalyzer(model, auditChain),
@@ -70,7 +84,7 @@ func BuildAllAgents(model *openai.ChatModel, auditChain *provenance.AuditChain, 
 }
 
 // BuildRunner assembles the full Eino Graph from an AgentSet.
-func BuildRunner(set *AgentSet) (compose.Runnable[schema.UserQuery, *schema.FinalReviewOutput], error) {
+func BuildRunner(set *AgentSet, nc *nats.Conn) (compose.Runnable[schema.UserQuery, *schema.FinalReviewOutput], error) {
 	return BuildCompetifyGraph(
 		set.Orchestrator,
 		set.CollectorWeb,
@@ -86,6 +100,7 @@ func BuildRunner(set *AgentSet) (compose.Runnable[schema.UserQuery, *schema.Fina
 		set.CrossReviewer,
 		set.Writer,
 		set.FinalReviewer,
+		nc,
 	)
 }
 

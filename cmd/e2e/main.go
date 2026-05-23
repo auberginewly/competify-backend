@@ -12,13 +12,13 @@ import (
 func main() {
 	ac := provenance.NewAuditChain()
 
-	agents, err := dag.BuildAllAgents(nil, ac, nil)
+	agents, err := dag.BuildAllAgents(nil, ac, nil, nil)
 	if err != nil {
 		fmt.Println("Build agents error:", err)
 		return
 	}
 
-	runnable, err := dag.BuildRunner(agents)
+	runnable, err := dag.BuildRunner(agents, nil)
 	if err != nil {
 		fmt.Println("Compile error:", err)
 		return

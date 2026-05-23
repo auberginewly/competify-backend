@@ -3,17 +3,20 @@ package collector
 import (
 	"context"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
 	"github.com/competify-ai/competify-backend/internal/agent"
 	"github.com/competify-ai/competify-backend/internal/provenance"
 	"github.com/competify-ai/competify-backend/internal/schema"
+	"github.com/competify-ai/competify-backend/internal/storage/tavily"
 )
 
 // SocialCollector gathers social media and community signals.
 type SocialCollector struct {
 	agent.BaseAgent
+	TavilyClient *tavily.Client
 }
 
 func NewSocialCollector(auditChain ...*provenance.AuditChain) *SocialCollector {
@@ -32,27 +35,39 @@ func (s *SocialCollector) Execute(ctx context.Context, input interface{}) (inter
 		return nil, fmt.Errorf("social collector: expected *schema.TaskDAGPlan, got %T", input)
 	}
 
-	url := fmt.Sprintf("https://www.producthunt.com/products/%s", strings.ToLower(plan.CompetitorName))
-	body, statusCode, err := fetchText(ctx, url)
 	var rawContent string
 	var confidence float64
-	if err != nil || statusCode != 200 {
-		rawContent = fmt.Sprintf("Stub social content for %s (fetch failed: status=%d err=%v)", plan.CompetitorName, statusCode, err)
-		statusCode = 0
-		confidence = 0.30
+	sourceURL := fmt.Sprintf("https://www.producthunt.com/products/%s", strings.ToLower(plan.CompetitorName))
+
+	if s.TavilyClient != nil {
+		query := fmt.Sprintf("%s ProductHunt Reddit Twitter user sentiment community reviews social media buzz 2024", plan.CompetitorName)
+		result, err := s.TavilyClient.Search(ctx, query)
+		if err != nil {
+			log.Printf("[SocialCollector] Tavily search failed for %s: %v", plan.CompetitorName, err)
+			rawContent = fmt.Sprintf("Search unavailable. Use training knowledge about %s community reception and social media sentiment.", plan.CompetitorName)
+			confidence = 0.40
+		} else {
+			rawContent = result
+			confidence = 0.80
+		}
 	} else {
-		title := extractTitle(body)
-		desc := extractMetaDescription(body)
-		rawContent = fmt.Sprintf("Title: %s\nDescription: %s\nPreview: %s", title, desc, truncate(body, 600))
-		confidence = 0.65
+		body, statusCode, err := fetchText(ctx, sourceURL)
+		if err != nil || statusCode != 200 {
+			rawContent = fmt.Sprintf("ProductHunt unavailable (status=%d). Use training knowledge about %s community reception.", statusCode, plan.CompetitorName)
+			confidence = 0.40
+		} else {
+			title := extractTitle(body)
+			desc := extractMetaDescription(body)
+			rawContent = fmt.Sprintf("Title: %s\nDescription: %s\nPreview: %s", title, desc, truncate(body, 600))
+			confidence = 0.65
+		}
 	}
 
 	pack := &schema.RawDataPack{
 		TaskID:      plan.TaskID,
 		SourceType:  "social",
-		SourceURL:   url,
+		SourceURL:   sourceURL,
 		RawContent:  rawContent,
-		StatusCode:  statusCode,
 		CapturedAt:  time.Now().UTC(),
 		CollectorID: s.GenerateID(plan.TaskID),
 	}

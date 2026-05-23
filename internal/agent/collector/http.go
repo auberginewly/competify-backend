@@ -12,8 +12,10 @@ import (
 
 func newHTTPClient() *resty.Client {
 	return resty.New().
-		SetTimeout(10 * time.Second).
-		SetHeader("User-Agent", "CompetifyAI/1.0")
+		SetTimeout(20 * time.Second).
+		SetHeader("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36").
+		SetHeader("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8").
+		SetHeader("Accept-Language", "en-US,en;q=0.5")
 }
 
 // fetchText performs a GET request and returns the response body, status code, and error.

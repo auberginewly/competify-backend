@@ -3,6 +3,7 @@ package analyzer
 import (
 	"context"
 	"fmt"
+	"log"
 	"time"
 
 	"github.com/cloudwego/eino-ext/components/model/openai"
@@ -33,8 +34,10 @@ func (t *TechAnalyzer) Execute(ctx context.Context, input interface{}) (interfac
 		return nil, fmt.Errorf("tech analyzer: expected *schema.NormalizedDataset, got %T", input)
 	}
 
-	payload, reasoning, score, err := analyzeWithLLM(ctx, t.model, "tech", ds.TaskID, ds.CleanedText)
+	competitor := competitorFromTaskID(ds.TaskID)
+	payload, reasoning, score, err := analyzeWithLLM(ctx, t.model, "tech", competitor, ds.CleanedText)
 	if err != nil {
+		log.Printf("[Analyzer] tech/%s LLM failed, using stub: %v", competitor, err)
 		payload = "Built on microservices with Rust core and TypeScript frontend."
 		reasoning = "Identified stack from GitHub repos and API headers."
 		score = 0.78

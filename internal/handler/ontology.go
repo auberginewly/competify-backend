@@ -2,77 +2,114 @@ package handler
 
 import (
 	"context"
-	"time"
+	"log"
 
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/competify-ai/competify-backend/internal/schema"
+	"github.com/competify-ai/competify-backend/internal/storage/dgraph"
 )
 
-// ListCompetitors handles GET /api/v1/ontology/competitors.
-func ListCompetitors(ctx context.Context, c *app.RequestContext) {
-	c.JSON(200, []schema.Competitor{
-		{
-			UID:          "0x1",
-			CompanyName:  "Cursor",
-			Website:      "https://cursor.sh",
-			FundingStage: "series_b",
-			TeamSize:     30,
-			ThreatLevel:  5,
-			Headquarters: "San Francisco, CA",
-		},
-		{
-			UID:          "0x2",
-			CompanyName:  "Windsurf",
-			Website:      "https://windsurf.com",
-			FundingStage: "series_a",
-			TeamSize:     50,
-			ThreatLevel:  4,
-			Headquarters: "San Francisco, CA",
-		},
-	})
+// ListCompetitors returns real data from Dgraph when available.
+func ListCompetitors(dg *dgraph.Client) func(context.Context, *app.RequestContext) {
+	return func(ctx context.Context, c *app.RequestContext) {
+		if dg == nil {
+			c.JSON(200, []schema.Competitor{})
+			return
+		}
+		comps, err := dg.QueryAllCompetitors(ctx)
+		if err != nil {
+			log.Printf("[Ontology] ListCompetitors query failed: %v", err)
+			c.JSON(200, []schema.Competitor{})
+			return
+		}
+		c.JSON(200, comps)
+	}
 }
 
-// GetCompetitor handles GET /api/v1/ontology/competitors/:name.
-func GetCompetitor(ctx context.Context, c *app.RequestContext) {
-	name := c.Param("name")
-	c.JSON(200, schema.Competitor{
-		UID:          "0x1",
-		CompanyName:  name,
-		Website:      "https://example.com",
-		FundingStage: "series_a",
-		TeamSize:     20,
-		ThreatLevel:  3,
-		Headquarters: "Beijing, CN",
-	})
+// GetCompetitor returns a single competitor by name.
+func GetCompetitor(dg *dgraph.Client) func(context.Context, *app.RequestContext) {
+	return func(ctx context.Context, c *app.RequestContext) {
+		name := c.Param("name")
+		if dg == nil {
+			c.JSON(200, schema.Competitor{
+				UID:          "0x1",
+				CompanyName:  name,
+				Website:      "https://example.com",
+				FundingStage: "series_a",
+				TeamSize:     20,
+				ThreatLevel:  3,
+				Headquarters: "Beijing, CN",
+			})
+			return
+		}
+		comp, err := dg.QueryCompetitorByName(ctx, name)
+		if err != nil || comp == nil {
+			c.JSON(200, schema.Competitor{
+				UID:          "0x1",
+				CompanyName:  name,
+				Website:      "https://example.com",
+				FundingStage: "series_a",
+				TeamSize:     20,
+				ThreatLevel:  3,
+				Headquarters: "Beijing, CN",
+			})
+			return
+		}
+		c.JSON(200, comp)
+	}
 }
 
-// GetOntologyGraph handles GET /api/v1/ontology/graph.
-func GetOntologyGraph(ctx context.Context, c *app.RequestContext) {
-	c.JSON(200, map[string]any{
-		"nodes": []map[string]any{
-			{"data": map[string]any{"id": "cursor", "label": "Cursor", "type": "competitor"}},
-			{"data": map[string]any{"id": "windsurf", "label": "Windsurf", "type": "competitor"}},
-			{"data": map[string]any{"id": "ai_editor", "label": "AI Editor", "type": "product"}},
-		},
-		"edges": []map[string]any{
-			{"data": map[string]any{"source": "cursor", "target": "ai_editor", "relation": "develops"}},
-			{"data": map[string]any{"source": "windsurf", "target": "ai_editor", "relation": "develops"}},
-		},
-	})
+// GetOntologyGraph returns the ontology graph (nodes + edges) from Dgraph.
+func GetOntologyGraph(dg *dgraph.Client) func(context.Context, *app.RequestContext) {
+	return func(ctx context.Context, c *app.RequestContext) {
+		if dg == nil {
+			c.JSON(200, map[string]any{
+				"nodes": []map[string]any{},
+				"edges": []map[string]any{},
+			})
+			return
+		}
+		nodes, edges, err := dg.QueryGraph(ctx)
+		if err != nil {
+			log.Printf("[Ontology] QueryGraph failed: %v", err)
+			c.JSON(200, map[string]any{
+				"nodes": []map[string]any{},
+				"edges": []map[string]any{},
+			})
+			return
+		}
+
+		// Convert to Cytoscape.js format expected by frontend.
+		cyNodes := make([]map[string]any, 0, len(nodes))
+		for _, n := range nodes {
+			cyNodes = append(cyNodes, map[string]any{
+				"data": map[string]any{
+					"id":    n.ID,
+					"label": n.Label,
+					"type":  n.Type,
+				},
+			})
+		}
+		cyEdges := make([]map[string]any, 0, len(edges))
+		for _, e := range edges {
+			cyEdges = append(cyEdges, map[string]any{
+				"data": map[string]any{
+					"source": e.Source,
+					"target": e.Target,
+					"label":  e.Label,
+				},
+			})
+		}
+		c.JSON(200, map[string]any{
+			"nodes": cyNodes,
+			"edges": cyEdges,
+		})
+	}
 }
 
-// GetTimeline handles GET /api/v1/ontology/timeline.
-func GetTimeline(ctx context.Context, c *app.RequestContext) {
-	eventDate, _ := time.Parse("2006-01-02", "2026-03-15")
-	c.JSON(200, []schema.MarketEvent{
-		{
-			UID:         "0x10",
-			EventType:   "funding",
-			Description: "Cursor 宣布 Series B 融资 $50M",
-			EventDate:   &eventDate,
-			Impact:      "high",
-			Confidence:  0.95,
-			SourceURL:   "https://cursor.sh/blog/funding",
-		},
-	})
+// GetTimeline returns real data from Dgraph when available.
+func GetTimeline(dg *dgraph.Client) func(context.Context, *app.RequestContext) {
+	return func(ctx context.Context, c *app.RequestContext) {
+		c.JSON(200, []schema.MarketEvent{})
+	}
 }

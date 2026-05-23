@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
@@ -23,12 +22,8 @@ type Publisher struct {
 	js jetstream.JetStream
 }
 
-// NewPublisher creates a Publisher and ensures the target Stream exists.
-func NewPublisher(nc *nats.Conn) (*Publisher, error) {
-	js, err := jetstream.New(nc)
-	if err != nil {
-		return nil, fmt.Errorf("messaging.NewPublisher: %w", err)
-	}
+// NewPublisher creates a Publisher from an existing JetStream context.
+func NewPublisher(js jetstream.JetStream) (*Publisher, error) {
 	return &Publisher{js: js}, nil
 }
 

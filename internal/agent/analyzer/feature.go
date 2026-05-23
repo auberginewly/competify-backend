@@ -5,6 +5,7 @@ package analyzer
 import (
 	"context"
 	"fmt"
+	"log"
 	"time"
 
 	"github.com/cloudwego/eino-ext/components/model/openai"
@@ -35,9 +36,10 @@ func (f *FeatureAnalyzer) Execute(ctx context.Context, input interface{}) (inter
 		return nil, fmt.Errorf("feature analyzer: expected *schema.NormalizedDataset, got %T", input)
 	}
 
-	payload, reasoning, score, err := analyzeWithLLM(ctx, f.model, "feature", ds.TaskID, ds.CleanedText)
+	competitor := competitorFromTaskID(ds.TaskID)
+	payload, reasoning, score, err := analyzeWithLLM(ctx, f.model, "feature", competitor, ds.CleanedText)
 	if err != nil {
-		// Fallback to stub so the pipeline never breaks during demo.
+		log.Printf("[Analyzer] feature/%s LLM failed, using stub: %v", competitor, err)
 		payload = "Core differentiators: real-time collaboration, AI-assisted code review, and multi-language support."
 		reasoning = "Extracted from product docs and release notes."
 		score = 0.88

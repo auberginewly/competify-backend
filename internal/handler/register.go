@@ -6,6 +6,7 @@ import (
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/cloudwego/hertz/pkg/app/server"
 	"github.com/competify-ai/competify-backend/internal/messaging"
+	"github.com/competify-ai/competify-backend/internal/storage/dgraph"
 	"github.com/competify-ai/competify-backend/internal/storage/memory"
 	"github.com/nats-io/nats.go"
 )
@@ -16,6 +17,7 @@ type Deps struct {
 	ReportStore   *memory.ReportStore
 	TaskPublisher *messaging.TaskPublisher
 	NATSConn      *nats.Conn
+	DgraphClient  *dgraph.Client
 }
 
 // Register mounts all HTTP and WebSocket routes onto the Hertz server.
@@ -33,10 +35,10 @@ func Register(h *server.Hertz, deps *Deps) {
 	api.POST("/reports/:id/approve", ApproveReport)
 
 	// Ontology
-	api.GET("/ontology/competitors", ListCompetitors)
-	api.GET("/ontology/competitors/:name", GetCompetitor)
-	api.GET("/ontology/graph", GetOntologyGraph)
-	api.GET("/ontology/timeline", GetTimeline)
+	api.GET("/ontology/competitors", ListCompetitors(deps.DgraphClient))
+	api.GET("/ontology/competitors/:name", GetCompetitor(deps.DgraphClient))
+	api.GET("/ontology/graph", GetOntologyGraph(deps.DgraphClient))
+	api.GET("/ontology/timeline", GetTimeline(deps.DgraphClient))
 
 	// Audit
 	api.GET("/audit/:provenance_id", GetAuditLog)

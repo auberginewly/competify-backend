@@ -10,7 +10,11 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-var upgrader = websocket.HertzUpgrader{}
+// Allow all origins in dev — browser sends Origin: localhost:5173 while
+// the backend host is localhost:8080, and the default same-origin check rejects it.
+var upgrader = websocket.HertzUpgrader{
+	CheckOrigin: func(ctx *app.RequestContext) bool { return true },
+}
 
 // DAGWebSocketHandler returns a handler for GET /api/v1/tasks/:id/dag (WebSocket upgrade).
 func DAGWebSocketHandler(deps *Deps) func(context.Context, *app.RequestContext) {
