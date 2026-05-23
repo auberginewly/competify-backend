@@ -7,6 +7,7 @@ import (
 
 	"github.com/cloudwego/eino/compose"
 	"github.com/competify-ai/competify-backend/internal/agent"
+	"github.com/competify-ai/competify-backend/internal/observability"
 	"github.com/competify-ai/competify-backend/internal/schema"
 )
 
@@ -121,11 +122,18 @@ func BuildCompetifyGraph(
 // collectorLambda wraps a collector agent to output a single-key map for Eino map-merge.
 func collectorLambda(a agent.Agent, key string) *compose.Lambda {
 	return compose.InvokableLambda(func(ctx context.Context, plan *schema.TaskDAGPlan) (map[string]*schema.RawDataPack, error) {
-		out, err := a.Execute(ctx, plan)
+		var pack *schema.RawDataPack
+		err := observability.TraceAgentExecution(ctx, a.Name(), plan.TaskID, func(ctx context.Context) error {
+			out, err := a.Execute(ctx, plan)
+			if err != nil {
+				return err
+			}
+			pack = out.(*schema.RawDataPack)
+			return nil
+		})
 		if err != nil {
 			return nil, err
 		}
-		pack := out.(*schema.RawDataPack)
 		return map[string]*schema.RawDataPack{key: pack}, nil
 	})
 }
@@ -133,22 +141,35 @@ func collectorLambda(a agent.Agent, key string) *compose.Lambda {
 // cleanerLambda wraps the cleaner agent to accept a merged map from all collectors.
 func cleanerLambda(a agent.Agent) *compose.Lambda {
 	return compose.InvokableLambda(func(ctx context.Context, packs map[string]*schema.RawDataPack) (*schema.NormalizedDataset, error) {
-		out, err := a.Execute(ctx, packs)
-		if err != nil {
-			return nil, err
-		}
-		return out.(*schema.NormalizedDataset), nil
+		taskID := anyTaskID(packs)
+		var ds *schema.NormalizedDataset
+		err := observability.TraceAgentExecution(ctx, a.Name(), taskID, func(ctx context.Context) error {
+			out, err := a.Execute(ctx, packs)
+			if err != nil {
+				return err
+			}
+			ds = out.(*schema.NormalizedDataset)
+			return nil
+		})
+		return ds, err
 	})
 }
 
 // analyzerLambda wraps an analyzer agent to output a single-key map for Eino map-merge.
 func analyzerLambda(a agent.Agent, key string) *compose.Lambda {
 	return compose.InvokableLambda(func(ctx context.Context, ds *schema.NormalizedDataset) (map[string]*schema.AnalysisResult, error) {
-		out, err := a.Execute(ctx, ds)
+		var result *schema.AnalysisResult
+		err := observability.TraceAgentExecution(ctx, a.Name(), ds.TaskID, func(ctx context.Context) error {
+			out, err := a.Execute(ctx, ds)
+			if err != nil {
+				return err
+			}
+			result = out.(*schema.AnalysisResult)
+			return nil
+		})
 		if err != nil {
 			return nil, err
 		}
-		result := out.(*schema.AnalysisResult)
 		return map[string]*schema.AnalysisResult{key: result}, nil
 	})
 }
@@ -156,12 +177,38 @@ func analyzerLambda(a agent.Agent, key string) *compose.Lambda {
 // crossReviewerLambda wraps the cross-reviewer agent to accept a merged map from all analyzers.
 func crossReviewerLambda(a agent.Agent) *compose.Lambda {
 	return compose.InvokableLambda(func(ctx context.Context, results map[string]*schema.AnalysisResult) (*schema.ReviewReport, error) {
-		out, err := a.Execute(ctx, results)
-		if err != nil {
-			return nil, err
-		}
-		return out.(*schema.ReviewReport), nil
+		taskID := anyAnalysisTaskID(results)
+		var report *schema.ReviewReport
+		err := observability.TraceAgentExecution(ctx, a.Name(), taskID, func(ctx context.Context) error {
+			out, err := a.Execute(ctx, results)
+			if err != nil {
+				return err
+			}
+			report = out.(*schema.ReviewReport)
+			return nil
+		})
+		return report, err
 	})
+}
+
+// anyTaskID returns the task ID from the first pack in the map (order undefined).
+func anyTaskID(packs map[string]*schema.RawDataPack) string {
+	for _, p := range packs {
+		if p != nil {
+			return p.TaskID
+		}
+	}
+	return "unknown"
+}
+
+// anyAnalysisTaskID returns the task ID from the first AnalysisResult in the map.
+func anyAnalysisTaskID(results map[string]*schema.AnalysisResult) string {
+	for _, r := range results {
+		if r != nil {
+			return r.TaskID
+		}
+	}
+	return "unknown"
 }
 
 // wrapAgent adapts the generic Agent interface to a typed Eino Lambda.
