@@ -17,7 +17,7 @@ import (
 
 // TestDevilsAdvocate_ApproveWhenClean: no marketing words, high score, multiple sources.
 func TestDevilsAdvocate_ApproveWhenClean(t *testing.T) {
-	da := NewDevilsAdvocate()
+	da := NewDevilsAdvocate(nil)
 	result := &schema.AnalysisResult{
 		TaskID:     "t1",
 		Dimension:  "feature",
@@ -41,7 +41,7 @@ func TestDevilsAdvocate_ApproveWhenClean(t *testing.T) {
 
 // TestDevilsAdvocate_RetryOnLowConfidence: score < 0.75 triggers RETRY_AUTO.
 func TestDevilsAdvocate_RetryOnLowConfidence(t *testing.T) {
-	da := NewDevilsAdvocate()
+	da := NewDevilsAdvocate(nil)
 	result := &schema.AnalysisResult{
 		TaskID:     "t1",
 		Dimension:  "pricing",
@@ -68,7 +68,7 @@ func TestDevilsAdvocate_RetryOnLowConfidence(t *testing.T) {
 
 // TestDevilsAdvocate_RetryOnMarketingHype: payload contains hype words.
 func TestDevilsAdvocate_RetryOnMarketingHype(t *testing.T) {
-	da := NewDevilsAdvocate()
+	da := NewDevilsAdvocate(nil)
 	result := &schema.AnalysisResult{
 		TaskID:     "t1",
 		Dimension:  "market",
@@ -98,7 +98,7 @@ func TestDevilsAdvocate_RetryOnMarketingHype(t *testing.T) {
 
 // TestDevilsAdvocate_RetryOnSingleSource: only one source cited.
 func TestDevilsAdvocate_RetryOnSingleSource(t *testing.T) {
-	da := NewDevilsAdvocate()
+	da := NewDevilsAdvocate(nil)
 	result := &schema.AnalysisResult{
 		TaskID:     "t1",
 		Dimension:  "tech",
@@ -128,7 +128,7 @@ func TestDevilsAdvocate_RetryOnSingleSource(t *testing.T) {
 
 // TestDevilsAdvocate_MultipleConflicts: low confidence + single source.
 func TestDevilsAdvocate_MultipleConflicts(t *testing.T) {
-	da := NewDevilsAdvocate()
+	da := NewDevilsAdvocate(nil)
 	result := &schema.AnalysisResult{
 		TaskID:     "t1",
 		Dimension:  "feature",
@@ -150,7 +150,7 @@ func TestDevilsAdvocate_MultipleConflicts(t *testing.T) {
 // TestDevilsAdvocate_RecordsAudit: audit chain is populated.
 func TestDevilsAdvocate_RecordsAudit(t *testing.T) {
 	ac := provenance.NewAuditChain()
-	da := NewDevilsAdvocate(ac)
+	da := NewDevilsAdvocate(nil, ac)
 	result := &schema.AnalysisResult{
 		TaskID:     "t1",
 		Dimension:  "feature",
@@ -169,7 +169,7 @@ func TestDevilsAdvocate_RecordsAudit(t *testing.T) {
 
 // TestCrossReviewer_ApproveWhenNoConflicts: all results pass Devil's Advocate.
 func TestCrossReviewer_ApproveWhenNoConflicts(t *testing.T) {
-	devil := NewDevilsAdvocate()
+	devil := NewDevilsAdvocate(nil)
 	cr := NewCrossReviewer(devil)
 	results := []*schema.AnalysisResult{
 		{TaskID: "t1", Dimension: "feature", Payload: "Stable APIs.", Score: 0.88, SourceURIs: []string{"v1", "v2"}, AnalyzerID: "a1"},
@@ -190,7 +190,7 @@ func TestCrossReviewer_ApproveWhenNoConflicts(t *testing.T) {
 
 // TestCrossReviewer_RetryAutoOnMediumConflicts: low confidence triggers RETRY_AUTO.
 func TestCrossReviewer_RetryAutoOnMediumConflicts(t *testing.T) {
-	devil := NewDevilsAdvocate()
+	devil := NewDevilsAdvocate(nil)
 	cr := NewCrossReviewer(devil)
 	results := []*schema.AnalysisResult{
 		{TaskID: "t1", Dimension: "feature", Payload: "Stable APIs.", Score: 0.88, SourceURIs: []string{"v1", "v2"}, AnalyzerID: "a1"},
@@ -211,7 +211,7 @@ func TestCrossReviewer_RetryAutoOnMediumConflicts(t *testing.T) {
 
 // TestCrossReviewer_RejectHumanOnHighSeverity: if any conflict is high severity.
 func TestCrossReviewer_RejectHumanOnHighSeverity(t *testing.T) {
-	_ = NewDevilsAdvocate()
+	_ = NewDevilsAdvocate(nil)
 	// Inject a result that would produce a high-severity conflict.
 	// Since current Devil only produces medium/low, we test the routing logic directly.
 	report := &schema.ReviewReport{
@@ -233,7 +233,7 @@ func TestCrossReviewer_RejectHumanOnHighSeverity(t *testing.T) {
 
 // TestCrossReviewer_AggregatesConflictsFromMultipleResults.
 func TestCrossReviewer_AggregatesConflicts(t *testing.T) {
-	devil := NewDevilsAdvocate()
+	devil := NewDevilsAdvocate(nil)
 	cr := NewCrossReviewer(devil)
 	results := []*schema.AnalysisResult{
 		{TaskID: "t1", Dimension: "feature", Payload: "Best ever.", Score: 0.50, SourceURIs: []string{"v1"}, AnalyzerID: "a1"},
