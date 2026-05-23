@@ -3,7 +3,43 @@
 // See docs/api.md for the full API contract.
 package handler
 
-// TODO Phase 2:
-//   - POST /api/v1/tasks           → CreateTask (body: UserQuery, response: {task_id})
-//   - GET  /api/v1/tasks/:id       → GetTask
-//   - GET  /api/v1/tasks/:id/dag   → GetDAGState (WebSocket)
+import (
+	"context"
+	"fmt"
+	"time"
+
+	"github.com/cloudwego/hertz/pkg/app"
+	"github.com/competify-ai/competify-backend/internal/schema"
+)
+
+type createTaskResponse struct {
+	TaskID string `json:"task_id"`
+}
+
+type taskStatus struct {
+	TaskID    string `json:"task_id"`
+	Status    string `json:"status"`
+	CreatedAt string `json:"created_at"`
+}
+
+// CreateTask handles POST /api/v1/tasks.
+func CreateTask(ctx context.Context, c *app.RequestContext) {
+	var req schema.UserQuery
+	if err := c.Bind(&req); err != nil {
+		c.JSON(400, map[string]string{"message": "invalid request body"})
+		return
+	}
+
+	taskID := fmt.Sprintf("task_%s_%d", req.CompetitorName, time.Now().Unix())
+	c.JSON(201, createTaskResponse{TaskID: taskID})
+}
+
+// GetTask handles GET /api/v1/tasks/:id.
+func GetTask(ctx context.Context, c *app.RequestContext) {
+	id := c.Param("id")
+	c.JSON(200, taskStatus{
+		TaskID:    id,
+		Status:    "running",
+		CreatedAt: time.Now().UTC().Format(time.RFC3339),
+	})
+}

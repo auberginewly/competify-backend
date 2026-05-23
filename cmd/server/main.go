@@ -11,11 +11,12 @@ package main
 import (
 	"context"
 	"flag"
-	"fmt"
 	"log"
 	"os"
 	"time"
 
+	"github.com/cloudwego/hertz/pkg/app/server"
+	"github.com/competify-ai/competify-backend/internal/handler"
 	"github.com/competify-ai/competify-backend/internal/schema"
 	"github.com/competify-ai/competify-backend/internal/storage/dgraph"
 )
@@ -37,13 +38,15 @@ func main() {
 	}
 
 	port := getenv("SERVER_PORT", "8080")
-	// Phase 2:
-	//   1. Init OTel tracer (observability.InitTracer)
-	//   2. Construct all Agents + DAG runnable via dag.BuildCompetifyGraph
-	//   3. Register Hertz routes (handler.CreateTask / GetTask / ...)
-	//   4. h.Spin()
-	log.Printf("CompetifyAI server scaffold ready, will listen on :%s", port)
-	fmt.Println("Phase 1 only: try -init-schema or -smoke-test. HTTP server lands in Phase 2.")
+
+	// Phase 2: start Hertz HTTP server with stub handlers.
+	h := server.Default(server.WithHostPorts(":" + port))
+	handler.Register(h)
+
+	log.Printf("CompetifyAI server listening on :%s", port)
+	if err := h.Run(); err != nil {
+		log.Fatalf("server error: %v", err)
+	}
 }
 
 func runInitSchema(addr string) {
