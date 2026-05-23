@@ -35,16 +35,29 @@ func (o *Orchestrator) Execute(ctx context.Context, input interface{}) (interfac
 	}
 
 	plan := &schema.TaskDAGPlan{
-		TaskID:            fmt.Sprintf("task_%s_%d", q.CompetitorName, time.Now().Unix()),
-		CompetitorName:    q.CompetitorName,
-		Dimensions:        q.Dimensions,
-		RequiresWebScrape: true,
-		RequiresAPI:       true,
-		RequiresReview:    true,
-		TargetSchema:      "v1.0",
-		CreatedAt:         time.Now().UTC(),
-		ExpiresAt:         time.Now().UTC().Add(24 * time.Hour),
+		TaskID:         fmt.Sprintf("task_%s_%d", q.CompetitorName, time.Now().Unix()),
+		CompetitorName: q.CompetitorName,
+		Dimensions:     q.Dimensions,
+		TargetSchema:   "v1.0",
+		CreatedAt:      time.Now().UTC(),
+		ExpiresAt:      time.Now().UTC().Add(24 * time.Hour),
 	}
+
+	// Light-weight rule engine: map requested dimensions to required collectors.
+	for _, d := range q.Dimensions {
+		switch d {
+		case "feature", "pricing":
+			plan.RequiresWebScrape = true
+		case "tech":
+			plan.RequiresAPI = true
+			plan.RequiresWebScrape = true
+		case "market":
+			plan.RequiresSocial = true
+			plan.RequiresWebScrape = true
+		}
+	}
+	plan.RequiresReview = true // always run cross-reviewer for quality
+	plan.RequiresFinancial = q.CompetitorName != ""
 
 	o.RecordAudit(plan.TaskID, o.GenerateID(plan.TaskID),
 		fmt.Sprintf("%+v", q), fmt.Sprintf("%+v", plan),

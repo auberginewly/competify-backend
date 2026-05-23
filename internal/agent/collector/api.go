@@ -30,18 +30,32 @@ func (a *APICollector) Execute(ctx context.Context, input interface{}) (interfac
 	if !ok {
 		return nil, fmt.Errorf("api collector: expected *schema.TaskDAGPlan, got %T", input)
 	}
+
+	searchURL := fmt.Sprintf("https://api.github.com/search/repositories?q=%s&sort=stars&order=desc", plan.CompetitorName)
+	body, statusCode, err := fetchText(ctx, searchURL)
+	var rawContent string
+	var confidence float64
+	if err != nil || statusCode != 200 {
+		rawContent = fmt.Sprintf("GitHub API failed: status=%d err=%v", statusCode, err)
+		statusCode = 0
+		confidence = 0.30
+	} else {
+		rawContent = body
+		confidence = 0.85
+	}
+
 	pack := &schema.RawDataPack{
 		TaskID:      plan.TaskID,
 		SourceType:  "api",
-		SourceURL:   fmt.Sprintf("https://api.github.com/%s", plan.CompetitorName),
-		RawContent:  fmt.Sprintf("Stub API content for %s", plan.CompetitorName),
-		StatusCode:  200,
+		SourceURL:   searchURL,
+		RawContent:  rawContent,
+		StatusCode:  statusCode,
 		CapturedAt:  time.Now().UTC(),
 		CollectorID: a.GenerateID(plan.TaskID),
 	}
 	a.RecordAudit(plan.TaskID, a.GenerateID(plan.TaskID),
 		plan.CompetitorName, pack.SourceURL,
-		"APICollector queried GitHub API", 0.85)
+		"APICollector queried GitHub API", confidence)
 	return pack, nil
 }
 

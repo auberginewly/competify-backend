@@ -3,6 +3,7 @@ package collector
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/competify-ai/competify-backend/internal/agent"
@@ -30,18 +31,34 @@ func (s *SocialCollector) Execute(ctx context.Context, input interface{}) (inter
 	if !ok {
 		return nil, fmt.Errorf("social collector: expected *schema.TaskDAGPlan, got %T", input)
 	}
+
+	url := fmt.Sprintf("https://www.producthunt.com/products/%s", strings.ToLower(plan.CompetitorName))
+	body, statusCode, err := fetchText(ctx, url)
+	var rawContent string
+	var confidence float64
+	if err != nil || statusCode != 200 {
+		rawContent = fmt.Sprintf("Stub social content for %s (fetch failed: status=%d err=%v)", plan.CompetitorName, statusCode, err)
+		statusCode = 0
+		confidence = 0.30
+	} else {
+		title := extractTitle(body)
+		desc := extractMetaDescription(body)
+		rawContent = fmt.Sprintf("Title: %s\nDescription: %s\nPreview: %s", title, desc, truncate(body, 600))
+		confidence = 0.65
+	}
+
 	pack := &schema.RawDataPack{
 		TaskID:      plan.TaskID,
 		SourceType:  "social",
-		SourceURL:   fmt.Sprintf("https://twitter.com/%s", plan.CompetitorName),
-		RawContent:  fmt.Sprintf("Stub social content for %s", plan.CompetitorName),
-		StatusCode:  200,
+		SourceURL:   url,
+		RawContent:  rawContent,
+		StatusCode:  statusCode,
 		CapturedAt:  time.Now().UTC(),
 		CollectorID: s.GenerateID(plan.TaskID),
 	}
 	s.RecordAudit(plan.TaskID, s.GenerateID(plan.TaskID),
 		plan.CompetitorName, pack.SourceURL,
-		"SocialCollector gathered community signals", 0.65)
+		"SocialCollector gathered community signals", confidence)
 	return pack, nil
 }
 

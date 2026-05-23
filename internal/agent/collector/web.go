@@ -27,26 +27,42 @@ func NewWebCollector(auditChain ...*provenance.AuditChain) *WebCollector {
 
 func (w *WebCollector) Name() string { return "collector_web" }
 
-// Execute returns a stub RawDataPack so the pipeline can run end-to-end.
+// Execute scrapes the competitor's homepage and extracts title + meta description.
 func (w *WebCollector) Execute(ctx context.Context, input interface{}) (interface{}, error) {
 	plan, ok := input.(*schema.TaskDAGPlan)
 	if !ok {
 		return nil, fmt.Errorf("web collector: expected *schema.TaskDAGPlan, got %T", input)
 	}
 
+	targetURL := fmt.Sprintf("https://%s.com", plan.CompetitorName)
+
+	html, statusCode, err := fetchText(ctx, targetURL)
+	var rawContent string
+	var confidence float64
+	if err != nil || statusCode != 200 {
+		rawContent = fmt.Sprintf("Failed to fetch %s: status=%d err=%v", targetURL, statusCode, err)
+		statusCode = 0
+		confidence = 0.30
+	} else {
+		title := extractTitle(html)
+		desc := extractMetaDescription(html)
+		rawContent = fmt.Sprintf("Title: %s\nDescription: %s\nPreview: %s", title, desc, truncate(html, 800))
+		confidence = 0.80
+	}
+
 	pack := &schema.RawDataPack{
 		TaskID:      plan.TaskID,
 		SourceType:  "web",
-		SourceURL:   fmt.Sprintf("https://%s.com", plan.CompetitorName),
-		RawContent:  fmt.Sprintf("Stub web content for %s", plan.CompetitorName),
-		StatusCode:  200,
+		SourceURL:   targetURL,
+		RawContent:  rawContent,
+		StatusCode:  statusCode,
 		CapturedAt:  time.Now().UTC(),
 		CollectorID: w.GenerateID(plan.TaskID),
 	}
 
 	w.RecordAudit(plan.TaskID, w.GenerateID(plan.TaskID),
 		plan.CompetitorName, pack.SourceURL,
-		"WebCollector fetched homepage", 0.80)
+		"WebCollector fetched homepage", confidence)
 
 	return pack, nil
 }

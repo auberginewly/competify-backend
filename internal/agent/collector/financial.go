@@ -3,6 +3,7 @@ package collector
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/competify-ai/competify-backend/internal/agent"
@@ -30,18 +31,34 @@ func (f *FinancialCollector) Execute(ctx context.Context, input interface{}) (in
 	if !ok {
 		return nil, fmt.Errorf("financial collector: expected *schema.TaskDAGPlan, got %T", input)
 	}
+
+	url := fmt.Sprintf("https://www.crunchbase.com/organization/%s", strings.ToLower(plan.CompetitorName))
+	body, statusCode, err := fetchText(ctx, url)
+	var rawContent string
+	var confidence float64
+	if err != nil || statusCode != 200 {
+		rawContent = fmt.Sprintf("Stub financial content for %s (fetch failed: status=%d err=%v)", plan.CompetitorName, statusCode, err)
+		statusCode = 0
+		confidence = 0.30
+	} else {
+		title := extractTitle(body)
+		desc := extractMetaDescription(body)
+		rawContent = fmt.Sprintf("Title: %s\nDescription: %s\nPreview: %s", title, desc, truncate(body, 600))
+		confidence = 0.65
+	}
+
 	pack := &schema.RawDataPack{
 		TaskID:      plan.TaskID,
 		SourceType:  "financial",
-		SourceURL:   fmt.Sprintf("https://crunchbase.com/%s", plan.CompetitorName),
-		RawContent:  fmt.Sprintf("Stub financial content for %s", plan.CompetitorName),
-		StatusCode:  200,
+		SourceURL:   url,
+		RawContent:  rawContent,
+		StatusCode:  statusCode,
 		CapturedAt:  time.Now().UTC(),
 		CollectorID: f.GenerateID(plan.TaskID),
 	}
 	f.RecordAudit(plan.TaskID, f.GenerateID(plan.TaskID),
 		plan.CompetitorName, pack.SourceURL,
-		"FinancialCollector gathered funding data", 0.75)
+		"FinancialCollector gathered funding data", confidence)
 	return pack, nil
 }
 

@@ -4,6 +4,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/competify-ai/competify-backend/internal/provenance"
@@ -26,28 +27,75 @@ func NewCleaner(auditChain ...*provenance.AuditChain) *Cleaner {
 
 func (c *Cleaner) Name() string { return "cleaner" }
 
-// Execute transforms RawDataPack into NormalizedDataset.
-// Phase 2 stub: returns a minimal normalized record so the pipeline continues.
+// Execute transforms RawDataPack(s) into NormalizedDataset.
+// It deduplicates parallel collector outputs using 64-bit SimHash.
 func (c *Cleaner) Execute(ctx context.Context, input interface{}) (interface{}, error) {
-	pack, ok := input.(*schema.RawDataPack)
-	if !ok {
-		return nil, fmt.Errorf("cleaner: expected *schema.RawDataPack, got %T", input)
+	var packs map[string]*schema.RawDataPack
+
+	switch v := input.(type) {
+	case map[string]*schema.RawDataPack:
+		packs = v
+	case *schema.RawDataPack:
+		packs = map[string]*schema.RawDataPack{"single": v}
+	default:
+		return nil, fmt.Errorf("cleaner: expected map[string]*schema.RawDataPack or *schema.RawDataPack, got %T", input)
+	}
+
+	if len(packs) == 0 {
+		return nil, fmt.Errorf("cleaner: empty collector map")
+	}
+
+	// SimHash deduplication across all collector outputs.
+	var deduped []string
+	var seen []uint64
+	var taskID string
+	for _, p := range packs {
+		if p == nil || p.RawContent == "" {
+			continue
+		}
+		if taskID == "" {
+			taskID = p.TaskID
+		}
+		h := simhash(p.RawContent)
+		duplicate := false
+		for _, s := range seen {
+			if hammingDistance(h, s) < 3 {
+				duplicate = true
+				break
+			}
+		}
+		if !duplicate {
+			seen = append(seen, h)
+			deduped = append(deduped, p.RawContent)
+		}
+	}
+
+	cleanedText := strings.Join(deduped, "\n---\n")
+	if cleanedText == "" {
+		cleanedText = "No content collected."
+	}
+
+	combinedHash := simhash(cleanedText)
+	confidence := 0.85
+	if len(deduped) < len(packs) {
+		confidence = 0.70 // lowered because some sources were duplicates
 	}
 
 	out := &schema.NormalizedDataset{
-		TaskID:      pack.TaskID,
-		VikingURI:   fmt.Sprintf("viking://competify/tasks/%s/collectors/%s", pack.TaskID, pack.SourceType),
-		SourceType:  pack.SourceType,
-		CleanedText: pack.RawContent,
-		Structured:  map[string]interface{}{"source_url": pack.SourceURL},
-		Confidence:  0.85,
-		CleanedAt:   time.Now().UTC(),
-		CleanerID:   c.GenerateID(pack.TaskID),
+		TaskID:       taskID,
+		VikingURI:    fmt.Sprintf("viking://competify/tasks/%s/cleaner", taskID),
+		SourceType:   "aggregated",
+		CleanedText:  cleanedText,
+		Structured:   map[string]interface{}{"unique_sources": len(deduped), "total_sources": len(packs)},
+		SimHashValue: combinedHash,
+		Confidence:   confidence,
+		CleanedAt:    time.Now().UTC(),
+		CleanerID:    c.GenerateID(taskID),
 	}
 
-	c.RecordAudit(pack.TaskID, c.GenerateID(pack.TaskID),
-		pack.SourceURL, out.VikingURI,
-		"Cleaner normalized raw data", out.Confidence)
+	c.RecordAudit(taskID, c.GenerateID(taskID),
+		fmt.Sprintf("%d sources", len(packs)), out.VikingURI,
+		fmt.Sprintf("Cleaner deduplicated to %d unique sources via SimHash", len(deduped)), out.Confidence)
 
 	return out, nil
 }

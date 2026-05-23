@@ -92,13 +92,14 @@ type AnalysisResult struct {
 
 // ReviewReport 交叉审查输出
 type ReviewReport struct {
-	TaskID       string     `json:"task_id"`
-	IsApproved   bool       `json:"is_approved"`
-	Conflicts    []Conflict `json:"conflicts"`
-	NextAction   string     `json:"next_action"` // APPROVE / RETRY_AUTO / REJECT_HUMAN
-	ReviewedAt   time.Time  `json:"reviewed_at"`
-	ReviewerID   string     `json:"reviewer_id"`
-	DebateRounds int        `json:"debate_rounds"`
+	TaskID       string             `json:"task_id"`
+	IsApproved   bool               `json:"is_approved"`
+	Conflicts    []Conflict         `json:"conflicts"`
+	Analyses     []*AnalysisResult  `json:"analyses"` // forwarded from analyzers for writer
+	NextAction   string             `json:"next_action"` // APPROVE / RETRY_AUTO / REJECT_HUMAN
+	ReviewedAt   time.Time          `json:"reviewed_at"`
+	ReviewerID   string             `json:"reviewer_id"`
+	DebateRounds int                `json:"debate_rounds"`
 }
 
 // Conflict 单条冲突描述
@@ -160,14 +161,15 @@ type FinalReviewOutput struct {
 
 // FinalReport 系统最终输出
 type FinalReport struct {
-	TaskID     string    `json:"task_id"`
-	ReportID   string    `json:"report_id"`
-	Content    string    `json:"content"`
-	Status     string    `json:"status"` // published / draft / rejected
-	Signature  string    `json:"signature"`
-	ApprovedBy string    `json:"approved_by"`
-	ApprovedAt time.Time `json:"approved_at"`
-	MerkleRoot string    `json:"merkle_root"`
+	TaskID     string     `json:"task_id"`
+	ReportID   string     `json:"report_id"`
+	Content    string     `json:"content"`
+	Status     string     `json:"status"` // published / draft / rejected
+	Signature  string     `json:"signature"`
+	ApprovedBy string     `json:"approved_by"`
+	ApprovedAt time.Time  `json:"approved_at"`
+	MerkleRoot string     `json:"merkle_root"`
+	Footnotes  []Footnote `json:"footnotes"`
 }
 
 // ============ Ontology Types ============

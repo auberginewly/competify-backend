@@ -41,39 +41,29 @@ func (w *Writer) Execute(ctx context.Context, input interface{}) (interface{}, e
 		merkleRoot = w.AuditChain.GetMerkleRoot()
 	}
 
-	// Stub conclusions with confidence anchors.
-	footnotes := []schema.Footnote{
-		{
-			ID:           "fn-1",
-			Conclusion:   "Pricing is competitive with a freemium model.",
-			Confidence:   0.82,
-			ProvenanceID: report.TaskID,
-			VikingURI:    "viking://competify/tasks/" + report.TaskID + "/analyzers/pricing",
-		},
-		{
-			ID:           "fn-2",
-			Conclusion:   "Core differentiators: real-time collaboration, AI-assisted code review, and multi-language support.",
-			Confidence:   0.88,
-			ProvenanceID: report.TaskID,
-			VikingURI:    "viking://competify/tasks/" + report.TaskID + "/analyzers/feature",
-		},
-		{
-			ID:           "fn-3",
-			Conclusion:   "Built on microservices with Rust core and TypeScript frontend.",
-			Confidence:   0.78,
-			ProvenanceID: report.TaskID,
-			VikingURI:    "viking://competify/tasks/" + report.TaskID + "/analyzers/tech",
-		},
-		{
-			ID:           "fn-4",
-			Conclusion:   "Strong momentum in enterprise segment; 40 % YoY growth estimated.",
-			Confidence:   0.71,
-			ProvenanceID: report.TaskID,
-			VikingURI:    "viking://competify/tasks/" + report.TaskID + "/analyzers/market",
-		},
+	// Build dynamic footnotes from analyzer outputs forwarded by CrossReviewer.
+	var footnotes []schema.Footnote
+	for i, a := range report.Analyses {
+		if a == nil {
+			continue
+		}
+		footnotes = append(footnotes, schema.Footnote{
+			ID:           fmt.Sprintf("fn-%d", i+1),
+			Conclusion:   a.Payload,
+			Confidence:   a.Score,
+			ProvenanceID: a.AnalyzerID,
+			VikingURI:    fmt.Sprintf("viking://competify/tasks/%s/analyzers/%s", report.TaskID, a.Dimension),
+		})
+	}
+	if len(footnotes) == 0 {
+		// ultimate fallback so the pipeline never breaks
+		footnotes = append(footnotes, schema.Footnote{
+			ID:         "fn-0",
+			Conclusion: "No analysis results available.",
+			Confidence: 0.0,
+		})
 	}
 
-	// Aggregate confidence using the 4-dimension formula.
 	avgConfidence := calculateAverageConfidence(footnotes)
 
 	draft := &schema.DraftReport{

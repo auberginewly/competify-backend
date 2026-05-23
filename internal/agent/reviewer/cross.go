@@ -34,11 +34,17 @@ func (c *CrossReviewer) Name() string { return "cross_reviewer" }
 func (c *CrossReviewer) Execute(ctx context.Context, input interface{}) (interface{}, error) {
 	results, ok := input.([]*schema.AnalysisResult)
 	if !ok {
-		single, sok := input.(*schema.AnalysisResult)
-		if sok {
-			results = []*schema.AnalysisResult{single}
+		if m, ok := input.(map[string]*schema.AnalysisResult); ok {
+			for _, r := range m {
+				results = append(results, r)
+			}
 		} else {
-			return nil, fmt.Errorf("cross reviewer: expected []*schema.AnalysisResult, got %T", input)
+			single, sok := input.(*schema.AnalysisResult)
+			if sok {
+				results = []*schema.AnalysisResult{single}
+			} else {
+				return nil, fmt.Errorf("cross reviewer: expected []*schema.AnalysisResult, map[string]*schema.AnalysisResult, or *schema.AnalysisResult, got %T", input)
+			}
 		}
 	}
 
@@ -78,6 +84,7 @@ func (c *CrossReviewer) Execute(ctx context.Context, input interface{}) (interfa
 		TaskID:       taskID,
 		IsApproved:   isApproved,
 		Conflicts:    allConflicts,
+		Analyses:     results,
 		NextAction:   nextAction,
 		ReviewedAt:   time.Now().UTC(),
 		ReviewerID:   c.GenerateID(taskID),
