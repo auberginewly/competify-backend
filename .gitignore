@@ -22,6 +22,8 @@ vendor/
 # Build artifacts
 /dist/
 /build/
+/server
+/worker
 
 # Logs
 *.log
