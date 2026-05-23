@@ -1,23 +1,24 @@
 package dag
 
-// Workflow 用于节点内部的字段级编排（Cleaner 多源汇聚、Cross-Reviewer 多维聚合）。
-//
-// Phase 2 实现计划：
-//
-//	wf := compose.NewWorkflow()
-//	wf.AddLambdaNode("extract", ...).AddInput(compose.START)
-//	wf.AddLambdaNode("dedup", ...).AddInput("extract")
-//	wf.AddLambdaNode("normalize", ...).AddInput("dedup")
-//	wf.End().AddInput("normalize")
-//	return wf.Compile(ctx)
-//
-// 详见 docs/dag-patterns.md。
-func BuildCleanerWorkflow() error {
-	// TODO Phase 2
-	return nil
+import (
+	"context"
+
+	"github.com/cloudwego/eino/compose"
+	"github.com/competify-ai/competify-backend/internal/schema"
+)
+
+// BuildCleanerWorkflow creates a field-level Workflow for deduplication and normalization.
+// Currently it acts as a pass-through placeholder; fine-grained SimHash / normalize nodes
+// will be added when the internal complexity justifies workflow-level decomposition.
+func BuildCleanerWorkflow() (compose.Runnable[map[string]*schema.RawDataPack, *schema.NormalizedDataset], error) {
+	wf := compose.NewWorkflow[map[string]*schema.RawDataPack, *schema.NormalizedDataset]()
+	return wf.Compile(context.Background())
 }
 
-func BuildReviewerWorkflow() error {
-	// TODO Phase 4
-	return nil
+// BuildReviewerWorkflow creates a field-level Workflow for cross-review aggregation.
+// Currently it acts as a pass-through placeholder; conflict-detect / severity-score nodes
+// will be added when the review logic grows beyond the CrossReviewer agent.
+func BuildReviewerWorkflow() (compose.Runnable[map[string]*schema.AnalysisResult, *schema.ReviewReport], error) {
+	wf := compose.NewWorkflow[map[string]*schema.AnalysisResult, *schema.ReviewReport]()
+	return wf.Compile(context.Background())
 }
