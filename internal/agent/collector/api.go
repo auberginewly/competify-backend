@@ -42,6 +42,9 @@ func (a *APICollector) Execute(ctx context.Context, input interface{}) (interfac
 	} else {
 		rawContent = body
 		confidence = 0.85
+		// Signal a product_launch event: GitHub release data indicates new features.
+		a.EmitEvent(ctx, plan.CompetitorName, "PRODUCT_LAUNCH",
+			fmt.Sprintf("github search: %d chars", len(body)), searchURL)
 	}
 
 	pack := &schema.RawDataPack{

@@ -35,13 +35,24 @@ type AgentSet struct {
 
 // BuildAllAgents initializes every agent role with a shared audit chain.
 // model may be nil (analyzers fall back to stub); vc may be nil (DevilsAdvocate falls back to heuristics).
-func BuildAllAgents(model *openai.ChatModel, auditChain *provenance.AuditChain, vc *viking.Client) (*AgentSet, error) {
+// notifyFn may be nil — Collectors call it on data detection for reactive ontology updates.
+func BuildAllAgents(model *openai.ChatModel, auditChain *provenance.AuditChain, vc *viking.Client, notifyFn ...agent.EventNotifier) (*AgentSet, error) {
 	devil := reviewer.NewDevilsAdvocate(vc, auditChain)
+
+	var notify agent.EventNotifier
+	if len(notifyFn) > 0 {
+		notify = notifyFn[0]
+	}
+
+	webCol := collector.NewWebCollector(auditChain)
+	webCol.Notify = notify
+	apiCol := collector.NewAPICollector(auditChain)
+	apiCol.Notify = notify
 
 	set := &AgentSet{
 		Orchestrator:  agent.NewOrchestrator(auditChain),
-		CollectorWeb:  collector.NewWebCollector(auditChain),
-		CollectorAPI:  collector.NewAPICollector(auditChain),
+		CollectorWeb:  webCol,
+		CollectorAPI:  apiCol,
 		CollectorFin:  collector.NewFinancialCollector(auditChain),
 		CollectorRev:  collector.NewReviewCollector(auditChain),
 		CollectorSoc:  collector.NewSocialCollector(auditChain),

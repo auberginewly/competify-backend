@@ -48,6 +48,11 @@ func (w *WebCollector) Execute(ctx context.Context, input interface{}) (interfac
 		desc := extractMetaDescription(html)
 		rawContent = fmt.Sprintf("Title: %s\nDescription: %s\nPreview: %s", title, desc, truncate(html, 800))
 		confidence = 0.80
+
+		// Emit a NEW_FEATURE event so the Reactive Watcher can update Dgraph.
+		// Treat a successful page scrape as "possible new feature" detection.
+		w.EmitEvent(ctx, plan.CompetitorName, "NEW_FEATURE",
+			fmt.Sprintf("web: %s", title), targetURL)
 	}
 
 	pack := &schema.RawDataPack{

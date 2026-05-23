@@ -10,11 +10,15 @@ import (
 	"os"
 	"time"
 
+	hertzapp "github.com/cloudwego/hertz/pkg/app"
 	"github.com/cloudwego/eino-ext/components/model/openai"
 	"github.com/cloudwego/hertz/pkg/app/server"
+	"github.com/cloudwego/hertz/pkg/common/adaptor"
+	"github.com/competify-ai/competify-backend/internal/agent"
 	"github.com/competify-ai/competify-backend/internal/dag"
 	"github.com/competify-ai/competify-backend/internal/handler"
 	"github.com/competify-ai/competify-backend/internal/messaging"
+	"github.com/competify-ai/competify-backend/internal/observability"
 	"github.com/competify-ai/competify-backend/internal/provenance"
 	"github.com/competify-ai/competify-backend/internal/schema"
 	"github.com/competify-ai/competify-backend/internal/storage/dgraph"
@@ -23,6 +27,7 @@ import (
 	"github.com/cloudwego/eino/compose"
 	natsserver "github.com/nats-io/nats-server/v2/server"
 	"github.com/nats-io/nats.go"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 func main() {
@@ -45,6 +50,15 @@ func main() {
 	natsURL := getenv("NATS_ADDR", "nats://localhost:4222")
 
 	ctx := context.Background()
+
+	// 0. Observability: init OTel tracing (Jaeger) + Prometheus metrics.
+	jaegerEndpoint := getenv("JAEGER_ENDPOINT", "http://localhost:14268/api/traces")
+	if shutdown, err := observability.InitTracer("competify-server", jaegerEndpoint); err != nil {
+		log.Printf("[OTel] Jaeger unavailable (%v), tracing disabled", err)
+	} else {
+		defer shutdown()
+		log.Printf("[OTel] tracing → %s", jaegerEndpoint)
+	}
 
 	// 1. Connect to NATS (external or embedded fallback).
 	nc, embeddedNS, err := connectNATS(natsURL)
@@ -72,10 +86,17 @@ func main() {
 	// 3.5 Initialize LLM model (nil is okay — analyzers fall back to stub data).
 	model := initChatModel(ctx)
 
+	// 3.6 Initialize competitor event Publisher (for Collector → NATS events).
+	competitorPub, notifyFn := initEventPublisher(ctx, nc)
+
+	// 3.7 Initialize Watcher + Dgraph (for reactive ontology updates).
+	go startOntologyWatcher(ctx, nc, dgraphAddr)
+
 	// 4. Initialize Agents + DAG runnable.
 	auditChain := provenance.NewAuditChain()
 	vikingClient := initVikingClient()
-	agents, err := dag.BuildAllAgents(model, auditChain, vikingClient)
+	_ = competitorPub // held for lifetime; GC anchor
+	agents, err := dag.BuildAllAgents(model, auditChain, vikingClient, notifyFn)
 	if err != nil {
 		log.Fatalf("build agents: %v", err)
 	}
@@ -96,6 +117,13 @@ func main() {
 		NATSConn:      nc,
 	}
 	handler.Register(h, deps)
+
+	// Expose Prometheus /metrics endpoint (wraps net/http handler into Hertz).
+	h.GET("/metrics", func(c context.Context, rctx *hertzapp.RequestContext) {
+		w := adaptor.GetCompatResponseWriter(&rctx.Response)
+		r, _ := adaptor.GetCompatRequest(&rctx.Request)
+		promhttp.Handler().ServeHTTP(w, r)
+	})
 
 	log.Printf("CompetifyAI server listening on :%s (NATS: %s)", port, natsURL)
 	if err := h.Run(); err != nil {
@@ -278,6 +306,56 @@ func initChatModel(ctx context.Context) *openai.ChatModel {
 	}
 	log.Printf("[LLM] initialized model %s via %s", modelName, baseURL)
 	return model
+}
+
+// initEventPublisher creates a messaging.Publisher backed EventNotifier.
+// Returns nil, nil when NATS is not available or stream setup fails — Collectors skip publishing.
+func initEventPublisher(ctx context.Context, nc *nats.Conn) (*messaging.Publisher, agent.EventNotifier) {
+	pub, err := messaging.NewPublisher(nc)
+	if err != nil {
+		log.Printf("[Events] failed to create publisher: %v, Collectors will skip NATS events", err)
+		return nil, nil
+	}
+	if err := pub.EnsureStream(ctx); err != nil {
+		log.Printf("[Events] failed to ensure stream: %v, Collectors will skip NATS events", err)
+		return nil, nil
+	}
+	log.Println("[Events] competitor event publisher ready")
+
+	notifyFn := func(ctx context.Context, competitorName, eventType, payload, sourceURL string) {
+		ev := &messaging.CompetitorEvent{
+			CompetitorName: competitorName,
+			EventType:      eventType,
+			Payload:        payload,
+			SourceURL:      sourceURL,
+			Confidence:     0.75,
+		}
+		if err := pub.PublishCompetitorEvent(ctx, ev); err != nil {
+			log.Printf("[Events] publish %s/%s: %v", competitorName, eventType, err)
+		}
+	}
+	return pub, notifyFn
+}
+
+// startOntologyWatcher connects to Dgraph and starts the NATS event loop.
+// Runs as a goroutine; safe to call even when Dgraph is unavailable.
+func startOntologyWatcher(ctx context.Context, nc *nats.Conn, dgraphAddr string) {
+	dgClient, err := dgraph.NewClient(dgraphAddr)
+	if err != nil {
+		log.Printf("[Watcher] Dgraph unavailable (%v), ontology auto-update disabled", err)
+		return
+	}
+	defer dgClient.Close()
+
+	watcher, err := messaging.NewWatcher(nc, dgClient)
+	if err != nil {
+		log.Printf("[Watcher] failed to create: %v", err)
+		return
+	}
+	log.Printf("[Watcher] starting reactive ontology loop (dgraph=%s)", dgraphAddr)
+	if err := watcher.Start(ctx); err != nil && err != context.Canceled {
+		log.Printf("[Watcher] exited with error: %v", err)
+	}
 }
 
 // initVikingClient creates an OpenViking client from env vars.

@@ -16,11 +16,26 @@ type Agent interface {
 	HealthCheck(ctx context.Context) error
 }
 
+// EventNotifier is an optional hook injected by the DAG runner so Collectors
+// can publish NATS competitor events without importing the messaging package.
+// competitorName, eventType ("NEW_FEATURE" / "PRICE_CHANGE" / ...), payload, sourceURL.
+type EventNotifier func(ctx context.Context, competitorName, eventType, payload, sourceURL string)
+
 // BaseAgent provides shared infrastructure for all agents.
 type BaseAgent struct {
 	ID         string
 	Role       string
 	AuditChain *provenance.AuditChain
+	// Notify is set by BuildAllAgents when a NATS Publisher is available.
+	// Always call EmitEvent instead of Notify directly — it handles the nil case.
+	Notify EventNotifier
+}
+
+// EmitEvent fires the optional event notifier. Safe to call when Notify is nil.
+func (b *BaseAgent) EmitEvent(ctx context.Context, competitorName, eventType, payload, sourceURL string) {
+	if b.Notify != nil {
+		b.Notify(ctx, competitorName, eventType, payload, sourceURL)
+	}
 }
 
 // RecordAudit wraps the execution result into the append-only audit chain.
