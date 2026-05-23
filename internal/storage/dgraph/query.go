@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/competify-ai/competify-backend/internal/schema"
 	"github.com/dgraph-io/dgo/v240/protos/api"
@@ -126,4 +127,87 @@ func (c *Client) queryCompetitorUID(ctx context.Context, name string) (string, e
 		return "", fmt.Errorf("dgraph.queryCompetitorUID: not found")
 	}
 	return result.Q[0].UID, nil
+}
+
+// AddFeature creates a Feature node linked to the competitor's first Product.
+// Phase 5 stub: creates the Feature and connects it via Product.offers_feature.
+func (c *Client) AddFeature(ctx context.Context, competitorName, featureName string) error {
+	// Find competitor UID and its first product UID.
+	q := fmt.Sprintf(`{
+		c as var(func: eq(Competitor.company_name, %q))
+		p as var(func: uid(c)) { develops { uid } }
+	}`, competitorName)
+
+	feat := map[string]any{
+		"uid":                   "_:feature",
+		"dgraph.type":           "Feature",
+		"Feature.feature_name":  featureName,
+		"Feature.availability":  true,
+		"Feature.maturity":      1,
+		"Feature.category":      "new",
+		"Feature.last_updated":  time.Now().UTC().Format(time.RFC3339),
+		"Feature.part_of":       map[string]string{"uid": "uid(p)"},
+	}
+	setJSON, _ := json.Marshal(feat)
+
+	req := &api.Request{
+		Query:     q,
+		Mutations: []*api.Mutation{{SetJson: setJSON}},
+		CommitNow: true,
+	}
+	if _, err := c.dg.NewTxn().Do(ctx, req); err != nil {
+		return fmt.Errorf("dgraph.AddFeature: %w", err)
+	}
+	return nil
+}
+
+// UpdatePricing creates or updates a PricingTier for the competitor.
+// Phase 5 stub: adds a new PricingTier node.
+func (c *Client) UpdatePricing(ctx context.Context, competitorName, payload string) error {
+	q := fmt.Sprintf(`{
+		c as var(func: eq(Competitor.company_name, %q))
+		p as var(func: uid(c)) { develops { uid } }
+	}`, competitorName)
+
+	pricing := map[string]any{
+		"uid":                     "_:pricing",
+		"dgraph.type":             "PricingTier",
+		"PricingTier.tier_name":   payload,
+		"PricingTier.price":       0.0,
+		"PricingTier.currency":    "USD",
+		"PricingTier.last_updated": time.Now().UTC().Format(time.RFC3339),
+	}
+	setJSON, _ := json.Marshal(pricing)
+
+	req := &api.Request{
+		Query:     q,
+		Mutations: []*api.Mutation{{SetJson: setJSON}},
+		CommitNow: true,
+	}
+	if _, err := c.dg.NewTxn().Do(ctx, req); err != nil {
+		return fmt.Errorf("dgraph.UpdatePricing: %w", err)
+	}
+	return nil
+}
+
+// RecordFunding updates the competitor's funding_stage and creates a MarketEvent.
+// Phase 5 stub: updates funding_stage only.
+func (c *Client) RecordFunding(ctx context.Context, competitorName, payload string) error {
+	q := fmt.Sprintf(`{ c as var(func: eq(Competitor.company_name, %q)) }`, competitorName)
+
+	update := map[string]any{
+		"uid":                     "uid(c)",
+		"Competitor.funding_stage": payload,
+	}
+	setJSON, _ := json.Marshal(update)
+
+	req := &api.Request{
+		Query:     q,
+		Mutations: []*api.Mutation{{SetJson: setJSON}},
+		CommitNow: true,
+	}
+	if _, err := c.dg.NewTxn().Do(ctx, req); err != nil {
+		return fmt.Errorf("dgraph.RecordFunding: %w", err)
+	}
+	return nil
 }
