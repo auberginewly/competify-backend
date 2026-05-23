@@ -8,20 +8,30 @@ import (
 	"github.com/competify-ai/competify-backend/internal/schema"
 )
 
-// GetReport handles GET /api/v1/reports/:id.
-func GetReport(ctx context.Context, c *app.RequestContext) {
-	id := c.Param("id")
-	approvedAt, _ := time.Parse(time.RFC3339, "2026-05-22T13:00:00Z")
-	c.JSON(200, schema.FinalReport{
-		TaskID:     id,
-		ReportID:   id,
-		Content:    mockReportMarkdown,
-		Status:     "published",
-		Signature:  "0x7a3f9e2b1c8d4e5f6a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f",
-		ApprovedBy: "final_reviewer",
-		ApprovedAt: approvedAt,
-		MerkleRoot: "0x7a3f9e2b1c8d4e5f6a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f",
-	})
+// GetReportHandler returns a handler for GET /api/v1/reports/:id.
+func GetReportHandler(deps *Deps) func(context.Context, *app.RequestContext) {
+	return func(ctx context.Context, c *app.RequestContext) {
+		id := c.Param("id")
+
+		// Try to read a real report from the memory store first.
+		if r, ok := deps.ReportStore.Get(id); ok {
+			c.JSON(200, r)
+			return
+		}
+
+		// Fallback to mock data for backward compatibility.
+		approvedAt, _ := time.Parse(time.RFC3339, "2026-05-22T13:00:00Z")
+		c.JSON(200, schema.FinalReport{
+			TaskID:     id,
+			ReportID:   id,
+			Content:    mockReportMarkdown,
+			Status:     "published",
+			Signature:  "0x7a3f9e2b1c8d4e5f6a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f",
+			ApprovedBy: "final_reviewer",
+			ApprovedAt: approvedAt,
+			MerkleRoot: "0x7a3f9e2b1c8d4e5f6a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f",
+		})
+	}
 }
 
 // GetProvenance handles GET /api/v1/reports/:id/provenance.

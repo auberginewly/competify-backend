@@ -1,11 +1,6 @@
 // Command server — HTTP API entrypoint.
 //
-// Phase 1 flags:
-//
-//	-init-schema   只跑 Dgraph InitializeSchema 后退出
-//	-smoke-test    端到端验证：init schema + upsert + query
-//
-// Phase 2: 接 Hertz / DAG / handlers / observability。
+// Phase 5: NATS task queue + embedded Worker goroutine for async DAG execution.
 package main
 
 import (
@@ -16,9 +11,16 @@ import (
 	"time"
 
 	"github.com/cloudwego/hertz/pkg/app/server"
+	"github.com/competify-ai/competify-backend/internal/dag"
 	"github.com/competify-ai/competify-backend/internal/handler"
+	"github.com/competify-ai/competify-backend/internal/messaging"
+	"github.com/competify-ai/competify-backend/internal/provenance"
 	"github.com/competify-ai/competify-backend/internal/schema"
 	"github.com/competify-ai/competify-backend/internal/storage/dgraph"
+	"github.com/competify-ai/competify-backend/internal/storage/memory"
+	"github.com/cloudwego/eino/compose"
+	natsserver "github.com/nats-io/nats-server/v2/server"
+	"github.com/nats-io/nats.go"
 )
 
 func main() {
@@ -38,14 +40,146 @@ func main() {
 	}
 
 	port := getenv("SERVER_PORT", "8080")
+	natsURL := getenv("NATS_ADDR", "nats://localhost:4222")
 
-	// Phase 2: start Hertz HTTP server with stub handlers.
+	ctx := context.Background()
+
+	// 1. Connect to NATS (external or embedded fallback).
+	nc, embeddedNS, err := connectNATS(natsURL)
+	if err != nil {
+		log.Fatalf("nats connect: %v", err)
+	}
+	defer nc.Close()
+	if embeddedNS != nil {
+		defer embeddedNS.Shutdown()
+	}
+
+	// 2. Initialize in-memory stores (shared between server and worker goroutine).
+	taskStore := memory.NewTaskStore()
+	reportStore := memory.NewReportStore()
+
+	// 3. Initialize messaging.
+	taskPublisher, err := messaging.NewTaskPublisher(nc)
+	if err != nil {
+		log.Fatalf("task publisher: %v", err)
+	}
+	if err := taskPublisher.EnsureTaskStream(ctx); err != nil {
+		log.Fatalf("ensure task stream: %v", err)
+	}
+
+	// 4. Initialize Agents + DAG runnable.
+	auditChain := provenance.NewAuditChain()
+	agents, err := dag.BuildAllAgents(auditChain)
+	if err != nil {
+		log.Fatalf("build agents: %v", err)
+	}
+	runnable, err := dag.BuildRunner(agents)
+	if err != nil {
+		log.Fatalf("build runner: %v", err)
+	}
+
+	// 5. Start Worker goroutine (same process, shares memory stores).
+	go runWorker(ctx, nc, taskStore, reportStore, auditChain, agents, runnable)
+
+	// 6. Register Hertz routes with injected dependencies.
 	h := server.Default(server.WithHostPorts(":" + port))
-	handler.Register(h)
+	deps := &handler.Deps{
+		TaskStore:     taskStore,
+		ReportStore:   reportStore,
+		TaskPublisher: taskPublisher,
+		NATSConn:      nc,
+	}
+	handler.Register(h, deps)
 
-	log.Printf("CompetifyAI server listening on :%s", port)
+	log.Printf("CompetifyAI server listening on :%s (NATS: %s)", port, natsURL)
 	if err := h.Run(); err != nil {
 		log.Fatalf("server error: %v", err)
+	}
+}
+
+// connectNATS tries external NATS first; falls back to embedded NATS server.
+func connectNATS(natsURL string) (*nats.Conn, *natsserver.Server, error) {
+	nc, err := nats.Connect(natsURL, nats.Timeout(3*time.Second))
+	if err == nil {
+		return nc, nil, nil
+	}
+	log.Printf("external NATS unavailable (%v), starting embedded server...", err)
+
+	ns, err := natsserver.NewServer(&natsserver.Options{
+		Port:      -1, // random free port
+		JetStream: true,
+		StoreDir:  os.TempDir(),
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+	go ns.Start()
+	if !ns.ReadyForConnections(5 * time.Second) {
+		ns.Shutdown()
+		return nil, nil, err
+	}
+
+	embeddedURL := ns.ClientURL()
+	nc, err = nats.Connect(embeddedURL, nats.Timeout(3*time.Second))
+	if err != nil {
+		ns.Shutdown()
+		return nil, nil, err
+	}
+	return nc, ns, nil
+}
+
+// runWorker starts the inline Worker goroutine that consumes NATS tasks.
+func runWorker(
+	ctx context.Context,
+	nc *nats.Conn,
+	taskStore *memory.TaskStore,
+	reportStore *memory.ReportStore,
+	auditChain *provenance.AuditChain,
+	agents *dag.AgentSet,
+	runnable compose.Runnable[schema.UserQuery, *schema.FinalReviewOutput],
+) {
+	log.Println("[Worker] starting inline worker goroutine...")
+
+	taskSub, err := messaging.NewTaskSubscriber(nc)
+	if err != nil {
+		log.Fatalf("[Worker] task subscriber: %v", err)
+	}
+
+	if err := taskSub.SubscribeTask(ctx, func(taskID string, query schema.UserQuery) {
+		log.Printf("[Worker] received task %s", taskID)
+		taskStore.Update(taskID, "running")
+
+		// Drive frontend progress bar via NATS while the real DAG runs.
+		go handler.SimulateProgress(nc, taskID)
+
+		// Execute the real DAG.
+		output, err := dag.ExecuteDAG(ctx, runnable, query)
+		if err != nil {
+			log.Printf("[Worker] task %s failed: %v", taskID, err)
+			taskStore.Update(taskID, "error")
+			return
+		}
+
+		// Store the final report.
+		merkleRoot := ""
+		if auditChain != nil {
+			merkleRoot = auditChain.GetMerkleRoot()
+		}
+		report := schema.FinalReport{
+			TaskID:     taskID,
+			ReportID:   output.ReportID,
+			Content:    output.Content,
+			Status:     output.Status,
+			Signature:  output.Signature,
+			ApprovedBy: output.ApprovedBy,
+			ApprovedAt: output.ApprovedAt,
+			MerkleRoot: merkleRoot,
+		}
+		reportStore.Save(report)
+		taskStore.Update(taskID, "done")
+		log.Printf("[Worker] task %s completed", taskID)
+	}); err != nil {
+		log.Fatalf("[Worker] subscribe task: %v", err)
 	}
 }
 

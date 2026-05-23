@@ -6,75 +6,73 @@ import (
 
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/hertz-contrib/websocket"
+	"github.com/competify-ai/competify-backend/internal/messaging"
+	"github.com/nats-io/nats.go"
 )
-
-// dagEvent is the JSON payload pushed to the frontend.
-type dagEvent struct {
-	NodeName  string   `json:"node_name"`
-	Status    string   `json:"status"`
-	Progress  float64  `json:"progress"`
-	Timestamp string   `json:"timestamp"`
-	Logs      []string `json:"logs"`
-}
 
 var upgrader = websocket.HertzUpgrader{}
 
-// DAGWebSocket handles GET /api/v1/tasks/:id/dag (WebSocket upgrade).
-func DAGWebSocket(ctx context.Context, c *app.RequestContext) {
-	taskID := c.Param("id")
+// DAGWebSocketHandler returns a handler for GET /api/v1/tasks/:id/dag (WebSocket upgrade).
+func DAGWebSocketHandler(deps *Deps) func(context.Context, *app.RequestContext) {
+	return func(ctx context.Context, c *app.RequestContext) {
+		taskID := c.Param("id")
 
-	err := upgrader.Upgrade(c, func(conn *websocket.Conn) {
-		defer conn.Close()
+		err := upgrader.Upgrade(c, func(conn *websocket.Conn) {
+			defer conn.Close()
 
-		simulateDAG(taskID, conn)
-	})
-	if err != nil {
-		// HertzUpgrader writes its own error response; no extra handling needed.
-		return
+			// Subscribe to NATS DAG status events for this task.
+			unsub, err := messaging.SubscribeDAGStatus(deps.NATSConn, taskID, func(ev messaging.DAGEvent) {
+				_ = conn.WriteJSON(ev)
+			})
+			if err != nil {
+				return
+			}
+			defer unsub()
+
+			// Send initial pending state for all agents.
+			for _, name := range agentNames {
+				_ = conn.WriteJSON(messaging.NewDAGEvent(name, "pending", 0))
+			}
+
+			// Keep connection open until the client disconnects or context cancelled.
+			for {
+				_, _, err := conn.ReadMessage()
+				if err != nil {
+					break
+				}
+			}
+		})
+		if err != nil {
+			return
+		}
 	}
 }
 
-var agentWave = []struct {
-	name string
-	wave int
-}{
-	{"orchestrator", 0},
-	{"collector_web", 1},
-	{"collector_api", 1},
-	{"collector_fin", 1},
-	{"collector_rev", 1},
-	{"collector_soc", 1},
-	{"cleaner", 2},
-	{"analyzer_feat", 3},
-	{"analyzer_price", 3},
-	{"analyzer_tech", 3},
-	{"analyzer_mkt", 3},
-	{"cross_reviewer", 4},
-	{"writer", 5},
-	{"final_reviewer", 6},
+var agentNames = []string{
+	"orchestrator",
+	"collector_web",
+	"collector_api",
+	"collector_fin",
+	"collector_rev",
+	"collector_soc",
+	"cleaner",
+	"analyzer_feat",
+	"analyzer_price",
+	"analyzer_tech",
+	"analyzer_mkt",
+	"cross_reviewer",
+	"writer",
+	"final_reviewer",
 }
 
-func simulateDAG(taskID string, conn *websocket.Conn) {
+// simulateProgress publishes mock DAG status events to NATS for a given task.
+// Used by the Worker to drive the frontend progress bar while the real DAG runs.
+func SimulateProgress(natsConn *nats.Conn, taskID string) {
 	// wave -> list of agent indices
 	waveMap := make(map[int][]int)
-	for i, a := range agentWave {
-		waveMap[a.wave] = append(waveMap[a.wave], i)
-	}
-
-	status := make([]string, len(agentWave))
-	for i := range status {
-		status[i] = "pending"
-	}
-
-	// Send initial pending state for all agents.
-	for i, a := range agentWave {
-		_ = conn.WriteJSON(dagEvent{
-			NodeName:  a.name,
-			Status:    status[i],
-			Progress:  0,
-			Timestamp: time.Now().UTC().Format(time.RFC3339),
-			Logs:      []string{},
-		})
+	for i, name := range agentNames {
+		wave := executionWave(name)
+		waveMap[wave] = append(waveMap[wave], i)
 	}
 
 	maxWave := 6
@@ -83,14 +81,7 @@ func simulateDAG(taskID string, conn *websocket.Conn) {
 
 		// Transition to running.
 		for _, idx := range agents {
-			status[idx] = "running"
-			_ = conn.WriteJSON(dagEvent{
-				NodeName:  agentWave[idx].name,
-				Status:    "running",
-				Progress:  0.1,
-				Timestamp: time.Now().UTC().Format(time.RFC3339),
-				Logs:      []string{agentWave[idx].name + " started"},
-			})
+			_ = messaging.PublishDAGEvent(natsConn, taskID, messaging.NewDAGEvent(agentNames[idx], "running", 0.1, agentNames[idx]+" started"))
 		}
 
 		// Simulate progress ticks within the wave.
@@ -101,30 +92,34 @@ func simulateDAG(taskID string, conn *websocket.Conn) {
 				if progress > 0.95 {
 					progress = 0.95
 				}
-				_ = conn.WriteJSON(dagEvent{
-					NodeName:  agentWave[idx].name,
-					Status:    "running",
-					Progress:  progress,
-					Timestamp: time.Now().UTC().Format(time.RFC3339),
-					Logs:      []string{agentWave[idx].name + " in progress..."},
-				})
+				_ = messaging.PublishDAGEvent(natsConn, taskID, messaging.NewDAGEvent(agentNames[idx], "running", progress, agentNames[idx]+" in progress..."))
 			}
 		}
 
 		// Transition to done.
 		time.Sleep(200 * time.Millisecond)
 		for _, idx := range agents {
-			status[idx] = "done"
-			_ = conn.WriteJSON(dagEvent{
-				NodeName:  agentWave[idx].name,
-				Status:    "done",
-				Progress:  1.0,
-				Timestamp: time.Now().UTC().Format(time.RFC3339),
-				Logs:      []string{agentWave[idx].name + " completed"},
-			})
+			_ = messaging.PublishDAGEvent(natsConn, taskID, messaging.NewDAGEvent(agentNames[idx], "done", 1.0, agentNames[idx]+" completed"))
 		}
 	}
+}
 
-	// Keep connection alive briefly so the frontend can read the final state.
-	time.Sleep(2 * time.Second)
+func executionWave(id string) int {
+	switch {
+	case id == "orchestrator":
+		return 0
+	case len(id) >= 9 && id[:9] == "collector":
+		return 1
+	case id == "cleaner":
+		return 2
+	case len(id) >= 8 && id[:8] == "analyzer":
+		return 3
+	case id == "cross_reviewer":
+		return 4
+	case id == "writer":
+		return 5
+	case id == "final_reviewer":
+		return 6
+	}
+	return 0
 }
