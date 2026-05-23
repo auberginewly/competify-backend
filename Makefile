@@ -1,5 +1,9 @@
 .PHONY: help infra-up infra-down server worker test lint tidy sync-types schema-gen schema-init clean
 
+# 自动加载 .env（如果存在）
+-include .env
+export
+
 help: ## 显示帮助
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-20s\033[0m %s\n", $$1, $$2}'
 
