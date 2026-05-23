@@ -10,6 +10,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/cloudwego/eino-ext/components/model/openai"
 	"github.com/cloudwego/hertz/pkg/app/server"
 	"github.com/competify-ai/competify-backend/internal/dag"
 	"github.com/competify-ai/competify-backend/internal/handler"
@@ -18,6 +19,7 @@ import (
 	"github.com/competify-ai/competify-backend/internal/schema"
 	"github.com/competify-ai/competify-backend/internal/storage/dgraph"
 	"github.com/competify-ai/competify-backend/internal/storage/memory"
+	"github.com/competify-ai/competify-backend/internal/storage/viking"
 	"github.com/cloudwego/eino/compose"
 	natsserver "github.com/nats-io/nats-server/v2/server"
 	"github.com/nats-io/nats.go"
@@ -67,9 +69,13 @@ func main() {
 		log.Fatalf("ensure task stream: %v", err)
 	}
 
+	// 3.5 Initialize LLM model (nil is okay — analyzers fall back to stub data).
+	model := initChatModel(ctx)
+
 	// 4. Initialize Agents + DAG runnable.
 	auditChain := provenance.NewAuditChain()
-	agents, err := dag.BuildAllAgents(auditChain)
+	vikingClient := initVikingClient()
+	agents, err := dag.BuildAllAgents(model, auditChain, vikingClient)
 	if err != nil {
 		log.Fatalf("build agents: %v", err)
 	}
@@ -244,6 +250,47 @@ func runSmokeTest(addr string) {
 	log.Printf("       uid=%s  company_name=%s  website=%s  threat_level=%d",
 		got.UID, got.CompanyName, got.Website, got.ThreatLevel)
 	log.Println("✅ smoke test passed")
+}
+
+// initChatModel creates the shared OpenAI chat model from environment variables.
+// Returns nil if MOCK_LLM is set or API key is missing — analyzers will fall back to stub data.
+func initChatModel(ctx context.Context) *openai.ChatModel {
+	if os.Getenv("MOCK_LLM") == "true" {
+		log.Println("[LLM] MOCK_LLM=true, running in stub mode")
+		return nil
+	}
+	apiKey := os.Getenv("OPENAI_API_KEY")
+	if apiKey == "" {
+		log.Println("[LLM] OPENAI_API_KEY not set, running in stub mode")
+		return nil
+	}
+	baseURL := getenv("OPENAI_BASE_URL", "https://api.deepseek.com/v1")
+	modelName := getenv("OPENAI_MODEL_NAME", "deepseek-chat")
+
+	model, err := openai.NewChatModel(ctx, &openai.ChatModelConfig{
+		BaseURL: baseURL,
+		APIKey:  apiKey,
+		Model:   modelName,
+	})
+	if err != nil {
+		log.Printf("[LLM] failed to init chat model: %v, falling back to stub mode", err)
+		return nil
+	}
+	log.Printf("[LLM] initialized model %s via %s", modelName, baseURL)
+	return model
+}
+
+// initVikingClient creates an OpenViking client from env vars.
+// Returns nil when VIKING_URL is not set — DevilsAdvocate falls back to heuristics.
+func initVikingClient() *viking.Client {
+	url := os.Getenv("VIKING_URL")
+	if url == "" {
+		log.Println("[Viking] VIKING_URL not set, DevilsAdvocate will use heuristic fallback")
+		return nil
+	}
+	apiKey := os.Getenv("VIKING_API_KEY")
+	log.Printf("[Viking] client initialized → %s", url)
+	return viking.NewClient(url, apiKey)
 }
 
 func getenv(key, fallback string) string {

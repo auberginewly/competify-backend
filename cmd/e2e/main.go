@@ -3,10 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
-	"github.com/competify-ai/competify-backend/internal/agent"
-	"github.com/competify-ai/competify-backend/internal/agent/analyzer"
-	"github.com/competify-ai/competify-backend/internal/agent/collector"
-	"github.com/competify-ai/competify-backend/internal/agent/reviewer"
+
 	"github.com/competify-ai/competify-backend/internal/dag"
 	"github.com/competify-ai/competify-backend/internal/provenance"
 	"github.com/competify-ai/competify-backend/internal/schema"
@@ -14,22 +11,19 @@ import (
 
 func main() {
 	ac := provenance.NewAuditChain()
-	
-	orch := agent.NewOrchestrator(ac)
-	coll := collector.NewWebCollector(ac)
-	clean := agent.NewCleaner(ac)
-	anal := analyzer.NewFeatureAnalyzer(ac)
-	devil := reviewer.NewDevilsAdvocate(nil, ac)
-	cross := reviewer.NewCrossReviewer(devil, ac)
-	writer := agent.NewWriter(ac)
-	final := reviewer.NewFinalReviewer([]byte("test-key"), ac)
-	
-	runnable, err := dag.BuildCompetifyGraph(orch, coll, clean, anal, cross, writer, final)
+
+	agents, err := dag.BuildAllAgents(nil, ac, nil)
+	if err != nil {
+		fmt.Println("Build agents error:", err)
+		return
+	}
+
+	runnable, err := dag.BuildRunner(agents)
 	if err != nil {
 		fmt.Println("Compile error:", err)
 		return
 	}
-	
+
 	result, err := runnable.Invoke(context.Background(), schema.UserQuery{
 		CompetitorName: "Cursor",
 		Dimensions:     []string{"feature", "pricing"},
@@ -38,7 +32,7 @@ func main() {
 		fmt.Println("Invoke error:", err)
 		return
 	}
-	
+
 	fmt.Println("SUCCESS!")
 	fmt.Printf("Report Status: %s\n", result.Status)
 	fmt.Printf("Signature: %s\n", result.Signature)

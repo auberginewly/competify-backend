@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/cloudwego/eino-ext/components/model/openai"
 	"github.com/cloudwego/eino/compose"
 	"github.com/competify-ai/competify-backend/internal/agent"
 	"github.com/competify-ai/competify-backend/internal/agent/analyzer"
@@ -11,29 +12,44 @@ import (
 	"github.com/competify-ai/competify-backend/internal/agent/reviewer"
 	"github.com/competify-ai/competify-backend/internal/provenance"
 	"github.com/competify-ai/competify-backend/internal/schema"
+	"github.com/competify-ai/competify-backend/internal/storage/viking"
 )
 
 // AgentSet holds all initialized agents for pipeline construction.
 type AgentSet struct {
-	Orchestrator  agent.Agent
-	Collector     agent.Agent
-	Cleaner       agent.Agent
-	Analyzer      agent.Agent
-	CrossReviewer agent.Agent
-	Writer        agent.Agent
-	FinalReviewer agent.Agent
+	Orchestrator   agent.Agent
+	CollectorWeb   agent.Agent
+	CollectorAPI   agent.Agent
+	CollectorFin   agent.Agent
+	CollectorRev   agent.Agent
+	CollectorSoc   agent.Agent
+	Cleaner        agent.Agent
+	AnalyzerFeat   agent.Agent
+	AnalyzerPrice  agent.Agent
+	AnalyzerTech   agent.Agent
+	AnalyzerMkt    agent.Agent
+	CrossReviewer  agent.Agent
+	Writer         agent.Agent
+	FinalReviewer  agent.Agent
 }
 
 // BuildAllAgents initializes every agent role with a shared audit chain.
-func BuildAllAgents(auditChain *provenance.AuditChain) (*AgentSet, error) {
-	// Devil's Advocate for CrossReviewer (Viking client can be nil in Phase 5).
-	devil := reviewer.NewDevilsAdvocate(nil, auditChain)
+// model may be nil (analyzers fall back to stub); vc may be nil (DevilsAdvocate falls back to heuristics).
+func BuildAllAgents(model *openai.ChatModel, auditChain *provenance.AuditChain, vc *viking.Client) (*AgentSet, error) {
+	devil := reviewer.NewDevilsAdvocate(vc, auditChain)
 
 	set := &AgentSet{
 		Orchestrator:  agent.NewOrchestrator(auditChain),
-		Collector:     collector.NewWebCollector(auditChain),
+		CollectorWeb:  collector.NewWebCollector(auditChain),
+		CollectorAPI:  collector.NewAPICollector(auditChain),
+		CollectorFin:  collector.NewFinancialCollector(auditChain),
+		CollectorRev:  collector.NewReviewCollector(auditChain),
+		CollectorSoc:  collector.NewSocialCollector(auditChain),
 		Cleaner:       agent.NewCleaner(auditChain),
-		Analyzer:      analyzer.NewFeatureAnalyzer(auditChain),
+		AnalyzerFeat:  analyzer.NewFeatureAnalyzer(model, auditChain),
+		AnalyzerPrice: analyzer.NewPricingAnalyzer(model, auditChain),
+		AnalyzerTech:  analyzer.NewTechAnalyzer(model, auditChain),
+		AnalyzerMkt:   analyzer.NewMarketAnalyzer(model, auditChain),
 		CrossReviewer: reviewer.NewCrossReviewer(devil, auditChain),
 		Writer:        agent.NewWriter(auditChain),
 		FinalReviewer: reviewer.NewFinalReviewer([]byte("competify-secret-key"), auditChain),
@@ -46,9 +62,16 @@ func BuildAllAgents(auditChain *provenance.AuditChain) (*AgentSet, error) {
 func BuildRunner(set *AgentSet) (compose.Runnable[schema.UserQuery, *schema.FinalReviewOutput], error) {
 	return BuildCompetifyGraph(
 		set.Orchestrator,
-		set.Collector,
+		set.CollectorWeb,
+		set.CollectorAPI,
+		set.CollectorFin,
+		set.CollectorRev,
+		set.CollectorSoc,
 		set.Cleaner,
-		set.Analyzer,
+		set.AnalyzerFeat,
+		set.AnalyzerPrice,
+		set.AnalyzerTech,
+		set.AnalyzerMkt,
 		set.CrossReviewer,
 		set.Writer,
 		set.FinalReviewer,

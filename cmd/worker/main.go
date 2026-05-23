@@ -7,11 +7,13 @@ import (
 	"log"
 	"os"
 
+	"github.com/cloudwego/eino-ext/components/model/openai"
 	"github.com/competify-ai/competify-backend/internal/dag"
 	"github.com/competify-ai/competify-backend/internal/handler"
 	"github.com/competify-ai/competify-backend/internal/messaging"
 	"github.com/competify-ai/competify-backend/internal/provenance"
 	"github.com/competify-ai/competify-backend/internal/schema"
+	"github.com/competify-ai/competify-backend/internal/storage/viking"
 	"github.com/nats-io/nats.go"
 )
 
@@ -25,9 +27,13 @@ func main() {
 
 	ctx := context.Background()
 
+	// Initialize LLM model (nil is okay — analyzers fall back to stub data).
+	model := initChatModel(ctx)
+
 	// Initialize Agents + DAG runnable.
 	auditChain := provenance.NewAuditChain()
-	agents, err := dag.BuildAllAgents(auditChain)
+	vikingClient := initVikingClient()
+	agents, err := dag.BuildAllAgents(model, auditChain, vikingClient)
 	if err != nil {
 		log.Fatalf("build agents: %v", err)
 	}
@@ -59,6 +65,44 @@ func main() {
 	}); err != nil {
 		log.Fatalf("subscribe task: %v", err)
 	}
+}
+
+// initChatModel creates the shared OpenAI chat model from environment variables.
+// Returns nil if MOCK_LLM is set or API key is missing — analyzers will fall back to stub data.
+func initChatModel(ctx context.Context) *openai.ChatModel {
+	if os.Getenv("MOCK_LLM") == "true" {
+		log.Println("[LLM] MOCK_LLM=true, running in stub mode")
+		return nil
+	}
+	apiKey := os.Getenv("OPENAI_API_KEY")
+	if apiKey == "" {
+		log.Println("[LLM] OPENAI_API_KEY not set, running in stub mode")
+		return nil
+	}
+	baseURL := getenv("OPENAI_BASE_URL", "https://api.deepseek.com/v1")
+	modelName := getenv("OPENAI_MODEL_NAME", "deepseek-chat")
+
+	model, err := openai.NewChatModel(ctx, &openai.ChatModelConfig{
+		BaseURL: baseURL,
+		APIKey:  apiKey,
+		Model:   modelName,
+	})
+	if err != nil {
+		log.Printf("[LLM] failed to init chat model: %v, falling back to stub mode", err)
+		return nil
+	}
+	log.Printf("[LLM] initialized model %s via %s", modelName, baseURL)
+	return model
+}
+
+// initVikingClient creates an OpenViking client from env vars.
+// Returns nil when VIKING_URL is not set — DevilsAdvocate falls back to heuristics.
+func initVikingClient() *viking.Client {
+	url := os.Getenv("VIKING_URL")
+	if url == "" {
+		return nil
+	}
+	return viking.NewClient(url, os.Getenv("VIKING_API_KEY"))
 }
 
 func getenv(key, fallback string) string {
